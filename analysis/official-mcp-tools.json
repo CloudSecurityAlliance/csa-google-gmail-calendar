@@ -1,0 +1,73 @@
+{
+  "_comment": "Tool inventory of Google's OFFICIAL remote MCP servers, captured 2026-08-31 from a live connection (Claude.ai connector), not from the documentation. The `documented` flag records whether the tool appears on the public configure-mcp-server page; where it is false, the tool ships but is undocumented. `api_method` maps the tool onto the method id in specs/*-discovery.json, or null where the tool has no public REST equivalent.",
+  "captured": "2026-08-31",
+  "method": "live MCP connection; tool schemas read off the wire",
+  "servers": {
+    "gmail": {
+      "endpoint": "https://gmailmcp.googleapis.com/mcp/v1",
+      "transport": "http",
+      "status": "Google Workspace Developer Preview Program",
+      "documented_scopes": ["gmail.readonly", "gmail.compose"],
+      "documented_tool_count": 11,
+      "live_tool_count": 29,
+      "tools": [
+        {"name": "search_threads",                "documented": true,  "mutating": false, "api_method": "gmail.users.threads.list"},
+        {"name": "get_thread",                    "documented": true,  "mutating": false, "api_method": "gmail.users.threads.get"},
+        {"name": "get_message",                   "documented": true,  "mutating": false, "api_method": "gmail.users.messages.get"},
+        {"name": "list_labels",                   "documented": true,  "mutating": false, "api_method": "gmail.users.labels.list"},
+        {"name": "list_drafts",                   "documented": true,  "mutating": false, "api_method": "gmail.users.drafts.list"},
+        {"name": "create_draft",                  "documented": true,  "mutating": true,  "api_method": "gmail.users.drafts.create"},
+        {"name": "create_label",                  "documented": true,  "mutating": true,  "api_method": "gmail.users.labels.create"},
+        {"name": "label_message",                 "documented": true,  "mutating": true,  "api_method": "gmail.users.messages.modify"},
+        {"name": "unlabel_message",               "documented": true,  "mutating": true,  "api_method": "gmail.users.messages.modify"},
+        {"name": "label_thread",                  "documented": true,  "mutating": true,  "api_method": "gmail.users.threads.modify"},
+        {"name": "unlabel_thread",                "documented": true,  "mutating": true,  "api_method": "gmail.users.threads.modify"},
+
+        {"name": "get_draft",                     "documented": false, "mutating": false, "api_method": "gmail.users.drafts.get"},
+        {"name": "update_draft",                  "documented": false, "mutating": true,  "api_method": "gmail.users.drafts.update"},
+        {"name": "send_message",                  "documented": false, "mutating": true,  "api_method": "gmail.users.messages.send | gmail.users.drafts.send"},
+        {"name": "reply",                         "documented": false, "mutating": true,  "api_method": "gmail.users.messages.send"},
+        {"name": "forward",                       "documented": false, "mutating": true,  "api_method": "gmail.users.messages.send"},
+        {"name": "update_label",                  "documented": false, "mutating": true,  "api_method": "gmail.users.labels.patch"},
+        {"name": "delete_label",                  "documented": false, "mutating": true,  "api_method": "gmail.users.labels.delete"},
+        {"name": "update_message_labels",         "documented": false, "mutating": true,  "api_method": "gmail.users.messages.modify"},
+        {"name": "trash_message",                 "documented": false, "mutating": true,  "api_method": "gmail.users.messages.trash"},
+        {"name": "untrash_message",               "documented": false, "mutating": true,  "api_method": "gmail.users.messages.untrash"},
+        {"name": "trash_thread",                  "documented": false, "mutating": true,  "api_method": "gmail.users.threads.trash"},
+        {"name": "untrash_thread",                "documented": false, "mutating": true,  "api_method": "gmail.users.threads.untrash"},
+        {"name": "mark_message_spam",             "documented": false, "mutating": true,  "api_method": "gmail.users.messages.modify"},
+        {"name": "unmark_message_spam",           "documented": false, "mutating": true,  "api_method": "gmail.users.messages.modify"},
+        {"name": "mark_thread_spam",              "documented": false, "mutating": true,  "api_method": "gmail.users.threads.modify"},
+        {"name": "unmark_thread_spam",            "documented": false, "mutating": true,  "api_method": "gmail.users.threads.modify"},
+        {"name": "apply_sensitive_message_label", "documented": false, "mutating": true,  "api_method": "gmail.users.messages.trash | gmail.users.messages.modify"},
+        {"name": "apply_sensitive_thread_label",  "documented": false, "mutating": true,  "api_method": "gmail.users.threads.trash | gmail.users.threads.modify"}
+      ],
+      "dangling_references": [
+        {"named_in": "apply_sensitive_message_label description", "names": "batch_apply_sensitive_message_labels", "present": false},
+        {"named_in": "apply_sensitive_thread_label description",  "names": "batch_apply_sensitive_thread_labels",  "present": false},
+        {"named_in": "Attachment.id schema description",          "names": "GetMessageAttachment",                 "present": false}
+      ]
+    },
+    "calendar": {
+      "endpoint": "https://calendarmcp.googleapis.com/mcp/v1",
+      "transport": "http",
+      "status": "Google Workspace Developer Preview Program",
+      "documented_scopes": ["calendar.calendarlist.readonly", "calendar.events.freebusy", "calendar.events.readonly"],
+      "documented_tool_count": 8,
+      "live_tool_count": 9,
+      "tools": [
+        {"name": "list_calendars",   "documented": true,  "mutating": false, "api_method": "calendar.calendarList.list"},
+        {"name": "list_events",      "documented": true,  "mutating": false, "api_method": "calendar.events.list"},
+        {"name": "get_event",        "documented": true,  "mutating": false, "api_method": "calendar.events.get"},
+        {"name": "suggest_time",     "documented": true,  "mutating": false, "api_method": "calendar.freebusy.query + slot selection"},
+        {"name": "create_event",     "documented": true,  "mutating": true,  "api_method": "calendar.events.insert"},
+        {"name": "update_event",     "documented": true,  "mutating": true,  "api_method": "calendar.events.patch"},
+        {"name": "delete_event",     "documented": true,  "mutating": true,  "api_method": "calendar.events.delete"},
+        {"name": "respond_to_event", "documented": true,  "mutating": true,  "api_method": "calendar.events.patch (attendee responseStatus)"},
+
+        {"name": "search_events",    "documented": false, "mutating": false, "api_method": null,
+         "note": "Semantic search over the PRIMARY calendar. No public Calendar API method performs semantic search; this is Google-side and cannot be reproduced against the REST API."}
+      ]
+    }
+  }
+}
