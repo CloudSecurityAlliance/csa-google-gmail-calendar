@@ -26,6 +26,96 @@ targeting **100% API coverage**.
 Out of scope, each needing its own snapshot: Gmail Postmaster Tools, the Admin SDK, Google
 Workspace Events, and the Apps Script / add-on surfaces.
 
+## Coverage
+
+Regenerate with `python3 scripts/coverage.py --markdown`; per-method detail is
+`analysis/coverage-matrix.csv`.
+
+**Google MCP** is `gmailmcp.googleapis.com` and `calendarmcp.googleapis.com`, captured
+unauthenticated 2026-09-01. **Anthropic connector** is the claude.ai Gmail and Google Calendar
+connectors, captured 2026-08-31. They are **one Google implementation at two exposure levels**,
+not two products: all 32 shared tools are schema-identical, and the six tools only the connector
+has are Google-authored too (see `analysis/observed-mcp-tools.json`).
+
+<!-- COVERAGE:START -->
+**117 API methods. Google's servers reach 21. The claude.ai connectors reach 26. Neither reaches 91.**
+
+| Surface | Gmail tools | Calendar tools | API methods reached |
+|---|---:|---:|---:|
+| Google MCP (`gmailmcp`/`calendarmcp`) | 23 | 9 | 21 of 117 |
+| claude.ai connectors | 29 | 9 | 26 of 117 |
+| `csa-google-gmail-calendar` (target) | — | — | 117 of 117 |
+
+### Gmail v1
+
+| Family | Methods | Mutating | Google MCP | Anthropic connector | What is missing |
+|---|---:|---:|---|---|---|
+| `users` | 3 | 2 | **none** | **none** | **everything** |
+| `users.drafts` | 6 | 4 | 3/6 | 5/6 | `delete` |
+| `users.history` | 1 | 0 | **none** | **none** | **everything** |
+| `users.labels` | 6 | 4 | 2/6 | 4/6 | `get`, `update` |
+| `users.messages` | 11 | 9 | 4/11 | 5/11 | `batchDelete`, `batchModify`, `delete`, `import` +2 |
+| `users.messages.attachments` | 1 | 0 | **none** | **none** | **everything** |
+| `users.settings` | 10 | 5 | **none** | **none** | **everything** |
+| `users.settings.cse.identities` | 5 | 3 | **none** | **none** | **everything** |
+| `users.settings.cse.keypairs` | 6 | 4 | **none** | **none** | **everything** |
+| `users.settings.delegates` | 4 | 2 | **none** | **none** | **everything** |
+| `users.settings.filters` | 4 | 2 | **none** | **none** | **everything** |
+| `users.settings.forwardingAddresses` | 4 | 2 | **none** | **none** | **everything** |
+| `users.settings.sendAs` | 7 | 5 | **none** | **none** | **everything** |
+| `users.settings.sendAs.smimeInfo` | 5 | 3 | **none** | **none** | **everything** |
+| `users.threads` | 6 | 4 | 5/6 | 5/6 | `delete` |
+| **total** | **79** | **49** | **14/79** | **19/79** | **60 methods** |
+
+### Calendar v3
+
+| Family | Methods | Mutating | Google MCP | Anthropic connector | What is missing |
+|---|---:|---:|---|---|---|
+| `acl` | 7 | 5 | **none** | **none** | **everything** |
+| `calendarList` | 7 | 5 | 1/7 | 1/7 | `delete`, `get`, `insert`, `patch` +2 |
+| `calendars` | 7 | 6 | **none** | **none** | **everything** |
+| `channels` | 1 | 1 | **none** | **none** | **everything** |
+| `colors` | 1 | 0 | **none** | **none** | **everything** |
+| `events` | 11 | 8 | 5/11 | 5/11 | `import`, `instances`, `move`, `quickAdd` +2 |
+| `freebusy` | 1 | 1 | 1/1 | 1/1 | — |
+| `settings` | 3 | 1 | **none** | **none** | **everything** |
+| **total** | **38** | **27** | **7/38** | **7/38** | **31 methods** |
+
+### Grouped by what it does
+
+| Capability group | API methods | Google MCP | Anthropic connector |
+|---|---:|---|---|
+| Read mail | 3 | all | all |
+| Attachments | 1 | **none** | **none** |
+| Drafts | 4 | 3/4 tools — no `update_draft` | all |
+| Send | 2 | **none** — no `forward`, `reply`, `send_message` | all |
+| Label definitions | 4 | 2/4 tools — no `delete_label`, `update_label` | all |
+| Label application | 2 | all | all |
+| Trash and spam | 6 | all | all |
+| Permanent delete | 4 | **none** | **none** |
+| Incremental sync | 2 | **none** | **none** |
+| Mailbox settings | 45 | **none** | **none** |
+| Calendar read | 4 | all | all |
+| Calendar write | 3 | all | all |
+| Calendar list & metadata | 11 | 1/11 methods | 1/11 methods |
+| Calendar management | 7 | **none** | **none** |
+| Calendar ACL | 7 | **none** | **none** |
+
+<!-- COVERAGE:END -->
+
+The shape of the gap, in one line each:
+
+- **Google's Gmail server cannot send mail.** No `send_message`, `reply` or `forward`. It creates
+  drafts it cannot send, and cannot modify one afterwards.
+- **Nobody downloads an attachment**, though `get_message` returns `attachment_ids` and points at
+  a `GetMessageAttachment` request no surface exposes.
+- **Nobody touches mailbox settings** — 45 methods, 57% of Gmail. Filters, forwarding, delegates,
+  send-as, S/MIME, client-side encryption.
+- **Nobody permanently deletes anything.** Trash is as far as either surface goes.
+- **Nobody reads calendar ACLs** — who can see or edit a calendar, 7 methods.
+- **Nobody does incremental sync**, so every read is a full listing.
+
+
 ## Why this exists
 
 Google ships official Gmail and Calendar MCP servers — two of **eight** Workspace MCP servers —
