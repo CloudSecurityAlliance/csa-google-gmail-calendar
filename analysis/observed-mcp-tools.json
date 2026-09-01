@@ -633,5 +633,22 @@
     "calendar": "https://calendarmcp.googleapis.com/mcp/v1",
     "chat": "https://chatmcp.googleapis.com/mcp/v1",
     "people": "https://people.googleapis.com/mcp/v1"
+  },
+  "provenance_finding": {
+    "_comment": "Established 2026-09-01 by diffing the captured schemas.",
+    "conclusion": "Google authored every tool on both surfaces. The claude.ai connector is not an Anthropic reimplementation and Google did not copy Anthropic: it is one Google implementation exposed at two levels.",
+    "evidence": [
+      "All 32 shared tools (23 Gmail + 9 Calendar) are schema-identical: same property names, same required fields.",
+      "Every inputSchema on both servers carries a protobuf request-message description, e.g. 'Request message for CreateDraft RPC.' - 23/23 Gmail and 9/9 Calendar.",
+      "x-google-enum-descriptions, a Google API extension, appears throughout both (10 occurrences Gmail, 30 Calendar).",
+      "Model-facing guidance I had assumed was Anthropic tuning is present in GOOGLE's own descriptions: 'OneMCP', gduser1@workspacesamples.dev, 'to prevent context exhaustion', 'Key indicators include', 'Example user prompts are'.",
+      "The six connector-only Gmail tools use the same protobuf naming (Send, Reply, Forward, UpdateDraft, UpdateLabel, DeleteLabel RPC), so they are Google-authored too - withheld from the public endpoint rather than added by Anthropic."
+    ],
+    "overlap": {
+      "calendar": "9/9 one-to-one, byte-for-byte on parameters",
+      "gmail": "Google's 23 is a strict subset of the connector's 29; no tool differs where both have it"
+    },
+    "inference_not_fact": "Why Google withholds six is not observable. gmail.compose would authorize sending, so scope is not the reason. The withheld set is exactly outbound mail plus irreversible label operations, which reads like preview-stage risk reduction with a vetted client getting the fuller surface.",
+    "correction": "Supersedes the claim in commit 877dab3 that send_message/reply/forward are Anthropic's vocabulary. They are Google's, merely unexposed publicly. All 29 Gmail names are legitimate Google vocabulary for alignment purposes."
   }
 }
