@@ -1,9 +1,316 @@
 {
-  "_comment": "Tool inventory of the CLAUDE.AI Gmail and Google Calendar CONNECTORS, captured 2026-08-31 from a live connection. These are NOT Google's own MCP servers. csa-google-workspace/research/drive-mcp-servers-and-api-surface.md establishes the distinction for Drive: the claude.ai connector publishes 11 tools, Google's drivemcp.googleapis.com publishes 8 - the same implementation minus update_file, share_file and trash_file. The same relationship is LIKELY but UNVERIFIED for Gmail and Calendar. The `documented` flag records whether a tool appears on Google's configure-mcp-server page, which describes GOOGLE'S server; a false value therefore means EITHER that Google ships it undocumented OR that the connector ships it and Google's server does not. Do not read it as proof of undocumented Google tools.",
+  "_comment": "Tool inventories for every Gmail/Calendar MCP surface we have probed. Google's own servers were captured 2026-09-01 by unauthenticated JSON-RPC tools/list against the public endpoints - no Developer Preview enrollment, no OAuth, no gcloud. Raw artifacts in research/captures/. The claude.ai connectors were captured 2026-08-31 off a live client connection. These are DIFFERENT PRODUCTS: Google's Gmail server ships 23 tools, the connector 29.",
   "captured": "2026-08-31",
   "method": "live MCP connection; tool schemas read off the wire",
   "servers": {
-    "gmail": {
+    "google_gmail": {
+      "captured_from": "https://gmailmcp.googleapis.com/mcp/v1 (unauthenticated tools/list)",
+      "endpoint": "https://gmailmcp.googleapis.com/mcp/v1",
+      "transport": "http",
+      "live_tool_count": 23,
+      "documented_tool_count": 11,
+      "scopes_declared_by_server": [
+        "https://mail.google.com/",
+        "https://www.googleapis.com/auth/gmail.modify",
+        "https://www.googleapis.com/auth/gmail.compose",
+        "https://www.googleapis.com/auth/gmail.readonly",
+        "https://www.googleapis.com/auth/gmail.metadata"
+      ],
+      "authorization_servers": [
+        "https://accounts.google.com/"
+      ],
+      "supports_dynamic_client_registration": false,
+      "every_tool_has_annotations": true,
+      "every_tool_has_output_schema": true,
+      "tools": [
+        {
+          "name": "create_draft",
+          "documented": true,
+          "title": "Create draft email",
+          "readOnlyHint": false,
+          "destructiveHint": false,
+          "idempotentHint": false
+        },
+        {
+          "name": "list_drafts",
+          "documented": true,
+          "title": "List draft emails",
+          "readOnlyHint": true,
+          "destructiveHint": false,
+          "idempotentHint": false
+        },
+        {
+          "name": "get_draft",
+          "documented": false,
+          "title": "Retrieves a specific draft email from the authenticated user's Gmail account.",
+          "readOnlyHint": true,
+          "destructiveHint": false,
+          "idempotentHint": false
+        },
+        {
+          "name": "get_thread",
+          "documented": true,
+          "title": "Get email thread",
+          "readOnlyHint": true,
+          "destructiveHint": false,
+          "idempotentHint": true
+        },
+        {
+          "name": "get_message",
+          "documented": true,
+          "title": "Get email message",
+          "readOnlyHint": true,
+          "destructiveHint": false,
+          "idempotentHint": true
+        },
+        {
+          "name": "search_threads",
+          "documented": true,
+          "title": "Search email threads",
+          "readOnlyHint": true,
+          "destructiveHint": false,
+          "idempotentHint": true
+        },
+        {
+          "name": "label_thread",
+          "documented": true,
+          "title": "Add labels to thread",
+          "readOnlyHint": false,
+          "destructiveHint": false,
+          "idempotentHint": true
+        },
+        {
+          "name": "unlabel_thread",
+          "documented": true,
+          "title": "Remove labels from thread",
+          "readOnlyHint": false,
+          "destructiveHint": true,
+          "idempotentHint": true
+        },
+        {
+          "name": "apply_sensitive_thread_label",
+          "documented": false,
+          "title": "Apply sensitive label (Trash or Spam) to thread",
+          "readOnlyHint": false,
+          "destructiveHint": true,
+          "idempotentHint": true
+        },
+        {
+          "name": "trash_thread",
+          "documented": false,
+          "title": "Moves a thread to Trash.",
+          "readOnlyHint": false,
+          "destructiveHint": true,
+          "idempotentHint": true
+        },
+        {
+          "name": "untrash_thread",
+          "documented": false,
+          "title": "Removes a thread from Trash.",
+          "readOnlyHint": false,
+          "destructiveHint": false,
+          "idempotentHint": true
+        },
+        {
+          "name": "mark_thread_spam",
+          "documented": false,
+          "title": "Marks a thread as Spam.",
+          "readOnlyHint": false,
+          "destructiveHint": true,
+          "idempotentHint": true
+        },
+        {
+          "name": "unmark_thread_spam",
+          "documented": false,
+          "title": "Unmarks a thread as Spam.",
+          "readOnlyHint": false,
+          "destructiveHint": false,
+          "idempotentHint": true
+        },
+        {
+          "name": "list_labels",
+          "documented": true,
+          "title": "List labels",
+          "readOnlyHint": true,
+          "destructiveHint": false,
+          "idempotentHint": true
+        },
+        {
+          "name": "label_message",
+          "documented": true,
+          "title": "Add labels to message",
+          "readOnlyHint": false,
+          "destructiveHint": false,
+          "idempotentHint": true
+        },
+        {
+          "name": "update_message_labels",
+          "documented": false,
+          "title": "Modify message labels",
+          "readOnlyHint": false,
+          "destructiveHint": false,
+          "idempotentHint": true
+        },
+        {
+          "name": "unlabel_message",
+          "documented": true,
+          "title": "Remove labels from message",
+          "readOnlyHint": false,
+          "destructiveHint": true,
+          "idempotentHint": true
+        },
+        {
+          "name": "apply_sensitive_message_label",
+          "documented": false,
+          "title": "Apply sensitive label (Trash or Spam) to message",
+          "readOnlyHint": false,
+          "destructiveHint": true,
+          "idempotentHint": true
+        },
+        {
+          "name": "trash_message",
+          "documented": false,
+          "title": "Moves a message to Trash.",
+          "readOnlyHint": false,
+          "destructiveHint": true,
+          "idempotentHint": true
+        },
+        {
+          "name": "untrash_message",
+          "documented": false,
+          "title": "Removes a message from Trash.",
+          "readOnlyHint": false,
+          "destructiveHint": false,
+          "idempotentHint": true
+        },
+        {
+          "name": "mark_message_spam",
+          "documented": false,
+          "title": "Marks a message as Spam.",
+          "readOnlyHint": false,
+          "destructiveHint": true,
+          "idempotentHint": true
+        },
+        {
+          "name": "unmark_message_spam",
+          "documented": false,
+          "title": "Unmarks a message as Spam.",
+          "readOnlyHint": false,
+          "destructiveHint": false,
+          "idempotentHint": true
+        },
+        {
+          "name": "create_label",
+          "documented": true,
+          "title": "Create label",
+          "readOnlyHint": false,
+          "destructiveHint": false,
+          "idempotentHint": false
+        }
+      ]
+    },
+    "google_calendar": {
+      "captured_from": "https://calendarmcp.googleapis.com/mcp/v1 (unauthenticated tools/list)",
+      "endpoint": "https://calendarmcp.googleapis.com/mcp/v1",
+      "transport": "http",
+      "live_tool_count": 9,
+      "documented_tool_count": 8,
+      "scopes_declared_by_server": [
+        "https://www.googleapis.com/auth/calendar",
+        "https://www.googleapis.com/auth/calendar.acls",
+        "https://www.googleapis.com/auth/calendar.calendarlist",
+        "https://www.googleapis.com/auth/calendar.calendarlist.readonly",
+        "https://www.googleapis.com/auth/calendar.calendars",
+        "https://www.googleapis.com/auth/calendar.calendars.readonly",
+        "https://www.googleapis.com/auth/calendar.events",
+        "https://www.googleapis.com/auth/calendar.events.freebusy",
+        "https://www.googleapis.com/auth/calendar.events.readonly",
+        "https://www.googleapis.com/auth/calendar.freebusy",
+        "https://www.googleapis.com/auth/calendar.readonly",
+        "https://www.googleapis.com/auth/calendar.settings.readonly"
+      ],
+      "authorization_servers": [
+        "https://accounts.google.com/"
+      ],
+      "supports_dynamic_client_registration": false,
+      "every_tool_has_annotations": true,
+      "every_tool_has_output_schema": true,
+      "tools": [
+        {
+          "name": "list_events",
+          "documented": true,
+          "title": "Lists calendar events in a given calendar.",
+          "readOnlyHint": true,
+          "destructiveHint": false,
+          "idempotentHint": true
+        },
+        {
+          "name": "get_event",
+          "documented": true,
+          "title": "Returns a single event on the specified calendar.",
+          "readOnlyHint": true,
+          "destructiveHint": false,
+          "idempotentHint": true
+        },
+        {
+          "name": "list_calendars",
+          "documented": true,
+          "title": "Returns the calendars on the user's calendar list.",
+          "readOnlyHint": true,
+          "destructiveHint": false,
+          "idempotentHint": true
+        },
+        {
+          "name": "suggest_time",
+          "documented": true,
+          "title": "Suggests time periods across one or more calendars.",
+          "readOnlyHint": true,
+          "destructiveHint": false,
+          "idempotentHint": true
+        },
+        {
+          "name": "create_event",
+          "documented": true,
+          "title": "Creates a calendar event.",
+          "readOnlyHint": false,
+          "destructiveHint": false,
+          "idempotentHint": false
+        },
+        {
+          "name": "update_event",
+          "documented": true,
+          "title": "Updates a calendar event.",
+          "readOnlyHint": false,
+          "destructiveHint": false,
+          "idempotentHint": true
+        },
+        {
+          "name": "delete_event",
+          "documented": true,
+          "title": "Deletes a calendar event.",
+          "readOnlyHint": false,
+          "destructiveHint": true,
+          "idempotentHint": true
+        },
+        {
+          "name": "respond_to_event",
+          "documented": true,
+          "title": "Responds to an event.",
+          "readOnlyHint": false,
+          "destructiveHint": false,
+          "idempotentHint": true
+        },
+        {
+          "name": "search_events",
+          "documented": false,
+          "title": "Searches for events on the user's primary calendar.",
+          "readOnlyHint": true,
+          "destructiveHint": false,
+          "idempotentHint": true
+        }
+      ]
+    },
+    "connector_gmail": {
       "endpoint": "https://gmailmcp.googleapis.com/mcp/v1",
       "transport": "http",
       "documented_scopes": [
@@ -209,9 +516,21 @@
       "live_tool_count_note": "29 tools on the CONNECTOR; Google's own server count is unverified",
       "documented_tool_count_note": "11 tools on Google's page, which documents GOOGLE'S server, not this connector",
       "exposes_server_instructions": false,
-      "exposes_mcp_resources": false
+      "exposes_mcp_resources": false,
+      "delta_vs_google": {
+        "connector_has_google_does_not": [
+          "delete_label",
+          "forward",
+          "reply",
+          "send_message",
+          "update_draft",
+          "update_label"
+        ],
+        "google_has_connector_does_not": [],
+        "reading": "Google declines to ship sending (send_message, reply, forward), draft modification (update_draft) and label mutation/deletion (update_label, delete_label). The same shape csa-google-workspace found for Drive: the same implementation, minus N."
+      }
     },
-    "calendar": {
+    "connector_calendar": {
       "endpoint": "https://calendarmcp.googleapis.com/mcp/v1",
       "transport": "http",
       "documented_scopes": [
@@ -282,18 +601,27 @@
       "live_tool_count_note": "9 tools on the CONNECTOR; Google's own server count is unverified",
       "documented_tool_count_note": "8 tools on Google's page, which documents GOOGLE'S server, not this connector",
       "exposes_server_instructions": false,
-      "exposes_mcp_resources": false
+      "exposes_mcp_resources": false,
+      "delta_vs_google": {
+        "symmetric_difference": [],
+        "reading": "The claude.ai Calendar connector and Google's Calendar server are identical: same 9 tools."
+      }
     }
   },
   "captured_from": "claude.ai connectors (mcp__claude_ai_Gmail__*, mcp__claude_ai_Google_Calendar__*)",
   "google_own_servers": {
-    "status": "NOT CAPTURED",
-    "blocker": "Requires Google Workspace Developer Preview Program enrollment, `gcloud services enable gmailmcp.googleapis.com gmail.googleapis.com` (and the calendar pair), an OAuth client, then connecting the remote endpoints as MCP servers.",
-    "endpoints": {
-      "gmail": "https://gmailmcp.googleapis.com/mcp/v1",
-      "calendar": "https://calendarmcp.googleapis.com/mcp/v1"
+    "status": "CAPTURED 2026-09-01",
+    "method": "unauthenticated POST tools/list to the public /mcp/v1 endpoints",
+    "raw": "research/captures/2026-09-01-{gmailmcp,calendarmcp}-*.json",
+    "serverInfo": {
+      "name": "StatelessServer",
+      "version": "ESF"
     },
-    "note": "Until captured, every claim in this repo about Google's own tool list rests on their documentation, not on a probe."
+    "protocolVersion": "2025-06-18",
+    "declares_instructions": false,
+    "exposes_resources": false,
+    "exposes_prompts": false,
+    "note": "resources/list and prompts/list return HTTP 404 HTML - the methods are not routed at all."
   },
   "workspace_mcp_server_family": {
     "_comment": "All eight, from https://developers.google.com/workspace/guides/configure-mcp-servers (2026-08-31). Four are csa-google-workspace territory; two are ours; Chat and People are neither yet.",
