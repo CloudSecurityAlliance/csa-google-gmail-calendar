@@ -11,13 +11,17 @@ constrain the design, not a description of a product.
 
 **117 methods across 23 families. 76 of them mutate state.**
 
-The "reachable via official MCP" column maps each family onto the tool inventory in
-`official-mcp-tools.json` — a method counts as reachable if some official tool calls it,
-even indirectly. **26 of 117 methods are reachable. 91 are not.**
+The "reachable via claude.ai connector" column maps each family onto the tool inventory in
+`observed-mcp-tools.json` — a method counts as reachable if some connector tool calls it, even
+indirectly. **26 of 117 methods are reachable. 91 are not.**
+
+That column measures the **claude.ai connectors**, which are the only MCP surfaces probed live.
+Google's own `gmailmcp`/`calendarmcp` servers have not been captured; on the Drive precedent they
+reach the same or fewer. See `PRIOR-ART.md` for why the two are not the same product.
 
 ### Gmail v1 — 79 methods, 15 families
 
-| family | methods | mutating | reachable via official MCP |
+| family | methods | mutating | reachable via claude.ai connector |
 |---|---:|---:|---|
 | `users` | 3 | 2 | **none** |
 | `users.drafts` | 6 | 4 | 5/6 |
@@ -38,7 +42,7 @@ even indirectly. **26 of 117 methods are reachable. 91 are not.**
 
 ### Calendar v3 — 38 methods, 8 families
 
-| family | methods | mutating | reachable via official MCP |
+| family | methods | mutating | reachable via claude.ai connector |
 |---|---:|---:|---|
 | `acl` | 7 | 5 | **none** |
 | `calendarList` | 7 | 5 | 1/7 |
@@ -87,11 +91,12 @@ write a calendar, and `acl.insert` with `role: "owner"` or a `scope.type: "defau
 makes a calendar world-readable. Same asymmetry as Gmail settings: reading it answers a
 governance question, writing it is a grant of access.
 
-### 3. Google's published scope lists disagree with Google's shipped servers
+### 3. Google's published scope lists disagree with Google's own capability claims
 
-Recorded in full in `PRIOR-ART.md` §2. The Calendar page lists three read-only scopes for a
-server that creates and deletes events; the Gmail page omits `gmail.modify` for a server
-that trashes mail.
+Recorded in full in `PRIOR-ART.md` §2, and it needs no probe — the contradiction is internal to
+Google's documentation. The Calendar page lists three read-only scopes on the same page that says
+the server creates and deletes events; the Gmail page omits `gmail.modify` while describing label
+and trash operations.
 
 *Design consequence:* never take a scope list from prose. Every method in
 `operation-inventory.csv` carries its own `scopes` column, taken from the Discovery
@@ -111,19 +116,21 @@ string-matching `description`, which is prose and will drift. Any claim this rep
 makes about a method being current is only as good as the snapshot date in
 `specs/PROVENANCE.md`. Re-fetch and diff before trusting it.
 
-### 5. One official tool cannot be reproduced
+### 5. One observed tool cannot be reproduced
 
-`search_events` performs **semantic** search over the primary calendar. No public Calendar
+`search_events` — shipped by the claude.ai Calendar connector, undocumented by Google, and of
+unverified presence on Google's own server — performs **semantic** search over the primary
+calendar. No public Calendar
 API method does semantic search — `events.list` offers `q`, a verbatim AND-match over
 title, description, location and attendees. Whatever Google runs behind
 `calendarmcp.googleapis.com` is not in the REST surface.
 
 This is the one place where a local server is strictly worse than the hosted one, and it
 should be said plainly rather than papered over with a keyword search wearing the same
-name. Its converse is the structural advantage: both official servers are Google-hosted
-remote endpoints gated behind the Developer Preview Program, so mailbox content and
-calendar content travel to a Google MCP frontend. A local stdio server keeps the
-credential and the content on the machine. That is the trade, and neither side of it is
+name. Its converse is the structural advantage: every alternative is remote — Google's eight
+servers are hosted endpoints gated behind the Developer Preview Program, and the claude.ai
+connectors are fronted by Anthropic — so mailbox and calendar content leaves the machine either
+way. A local stdio server keeps the credential and the content on it. That is the trade, and neither side of it is
 free.
 
 ## Pagination
