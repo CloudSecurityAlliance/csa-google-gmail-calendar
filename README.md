@@ -176,7 +176,11 @@ the same guarantee an MCP client does.
 | `analysis/API-SURFACE.md` | **Start here.** The enumeration and the five findings |
 | `analysis/PRIOR-ART.md` | The two claude.ai connectors and one community server, captured live; what is still unprobed |
 | `analysis/operation-inventory.csv` | 117 rows, one per method, with per-method scopes |
-| `analysis/observed-mcp-tools.json` | 38 connector tool names, mapped onto API methods |
+| `analysis/observed-mcp-tools.json` | Every surface's tool list, mapped onto API methods |
+| `analysis/coverage-matrix.csv` | 117 rows: which surface reaches each method |
+| `research/2026-09-01-mcp-server-landscape.md` | The three surfaces in full, and what they tell the model |
+| `research/captures/` | Raw JSON-RPC captures from Google's servers |
+| `scripts/coverage.py` | Regenerates the matrix and the README tables |
 | `scripts/inventory.py` | Regenerates the inventory from `specs/` |
 
 Google publishes **Discovery documents**, not OpenAPI, and unlike Zendesk it links to them —
@@ -196,16 +200,61 @@ the connector ships 11 tools and Google's server 8.
 Google's documentation; only claims about the connectors rest on a probe. `PRIOR-ART.md` marks
 which is which.
 
-## Alignment
+## Alignment: copy, fill, better
 
-Where the observed tools and ours do the same thing, ours will carry the observed name —
-`get_message`, `search_threads`, `label_thread`, `create_event`, `suggest_time`. Two of its
-conventions are worth adopting outright: the **thread/message axis named in every tool**, and
-the **`view` / `messageFormat` projections** that let a caller ask for envelope without body.
-Departures from Google's naming will be listed here with a reason, once there are any.
+Google authored every tool on both official surfaces, so its vocabulary is *the* vocabulary. The
+plan has three parts, in order of how much each is owed to them.
 
-One observed tool cannot be reproduced: `search_events` is semantic search with no public REST
-equivalent. Saying so is better than shipping a keyword search wearing the same name.
+### Copy — their per-tool conventions, adopted wholesale
+
+- **All 29 Gmail and 9 Calendar tool names.** Google wrote the six it withholds publicly
+  (`send_message`, `reply`, `forward`, `update_draft`, `update_label`, `delete_label`) as well as
+  the 23 it publishes, so using them costs no invention and no divergence.
+- **The thread/message axis named in every tool** — `label_thread` vs `label_message` — which the
+  community server collapses and then cannot express.
+- **`view` / `messageFormat` projections.** Framed by Google as economy; `METADATA_ONLY` returns
+  envelope without body, which makes it a data-minimisation control a caller cannot forget.
+- **Annotations and `outputSchema` on every tool**, as they do on 32/32. Their annotation logic is
+  right and we adopt it: removing something the user expects to be there is destructive
+  (`unlabel_*`, `trash_*`, `mark_*_spam`); putting it back is not.
+- **Their six guidance patterns** — cross-tool routing, prefer/instead, negative capability,
+  empty-result disambiguation, context-cost steering, upstream-behaviour warnings.
+
+### Fill — the gaps inside their own model
+
+- **Irreversibility warnings.** No tool on any surface says "cannot be undone" or "permanently".
+  Their `delete_label` reads *"Deletes a label in the authenticated user's Gmail account"* where
+  the REST API says it *"Immediately and permanently deletes the specified label and removes it
+  from any messages and threads that it's applied to."* We relay the destructive half — and we
+  ship far more irreversible operations than they do.
+- **`get_attachment`.** Their `get_message` returns `attachment_ids` and points the model at a
+  `GetMessageAttachment` request no surface exposes.
+- **The guidance template applied to every tool**, not just `get_message` — the one tool that got
+  "Key indicators" and "Example user prompts" before the rollout apparently stopped.
+
+### Better — the layer they have nowhere to put
+
+Their per-tool guidance is good. What has no home in a tool description is anything that is not
+about one tool, which is why neither server ships it:
+
+- **Server `instructions`** — that message content is untrusted data and never instructions; which
+  credentials are configured and what each unlocks; what this deployment is hiding and why.
+- **MCP resources** — the live effective policy and a capability reference, as
+  `csa-google-workspace` publishes at `csa-gw://config`. Both official servers return HTTP 404 for
+  `resources/list`; the method is not routed at all.
+- **Refusals that can be relayed.** A gated-but-registered tool says "capability X is disabled, an
+  operator enables it in configuration". An absent tool reads as "this server cannot do that", and
+  the model goes looking for another route.
+- **Scope minimisation.** Both official servers over-declare: Gmail advertises `mail.google.com`
+  while shipping no permanent-delete tool; Calendar advertises `calendar.acls` while shipping no
+  ACL tool. We request the scopes the *enabled capabilities* need and nothing else.
+
+### The one thing we cannot match
+
+`search_events` is semantic search with no public REST equivalent. `events.list` offers `q`, a
+verbatim AND-match. Shipping keyword search under Google's name for semantic search would be the
+one lie that is hard to detect from outside, so we do not ship it, and the `google` flavour says
+it is absent and why.
 
 ## Configuration
 
