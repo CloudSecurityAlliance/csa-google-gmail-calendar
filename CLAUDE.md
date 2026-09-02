@@ -3,8 +3,10 @@
 ## What this repository is
 
 `csa-google-gmail-calendar` — a Python library and **local stdio** MCP server over the Gmail v1
-and Calendar v3 REST APIs, targeting 100% API coverage. Fourth in the line after `csa-skilljar`,
-`csa-google-workspace` and `csa-zendesk`, on the same spine.
+and Calendar v3 REST APIs. Fourth in the line after `csa-skilljar`, `csa-google-workspace` and
+`csa-zendesk`, on the same spine. **Two pillars:** 100% API coverage (117 methods), and a message
+analysis layer (raw MIME fetch, SPF/DKIM/DMARC, header-presentation sanity, spam and
+prompt-injection checks). The second is roughly half the product — see §9 of the design spec.
 
 > **There is no `src/`. Nothing is implemented.** This repository currently holds the upstream
 > Discovery snapshots, the operation inventory, the live captures of every competing MCP surface,
@@ -36,7 +38,13 @@ and Calendar v3 REST APIs, targeting 100% API coverage. Fourth in the line after
    and `calendar` is the *broadest* scope in the set — narrowness must be a declared partial
    order, never an inferred one.
 
-3. **Google's scope boundaries are a FLOOR for our capability model, not the definition.** They
+3. **SPF/DKIM/DMARC authenticate a DOMAIN, never a claimed identity.** A phish sent from a domain
+   the attacker controls passes all three honestly. Never present a green authentication result as
+   a verdict on the message — the identity-presentation checks (§9 of the spec) are what catch
+   impersonation without spoofing. Also: only the `Authentication-Results` header added by the
+   receiving boundary may be trusted; an attacker can put their own in the message.
+
+4. **Google's scope boundaries are a FLOOR for our capability model, not the definition.** They
    are demonstrably incoherent in places: `sendAs.create` needs `gmail.settings.sharing` but
    `sendAs.patch` does not, and `cse.keypairs.obliterate` — which permanently destroys a key pair
    and makes encrypted mail unreadable — is reachable with `gmail.settings.basic`, the same scope
@@ -44,7 +52,7 @@ and Calendar v3 REST APIs, targeting 100% API coverage. Fourth in the line after
    where it is looser, and record every override with a reason. The policy test asserts
    `our_gate >= google_gate`, never equality.
 
-4. **Ten Gmail methods cannot be called with user OAuth at all.** `updateAutoForwarding`,
+5. **Ten Gmail methods cannot be called with user OAuth at all.** `updateAutoForwarding`,
    `delegates.{create,delete,get,list}`, `forwardingAddresses.{create,delete}`,
    `sendAs.{create,delete,verify}` require a **service account with domain-wide delegation**.
    `delegates.list` is among them, so *you cannot enumerate who else can read a mailbox using that
@@ -52,11 +60,11 @@ and Calendar v3 REST APIs, targeting 100% API coverage. Fourth in the line after
    two Skilljar APIs: user OAuth reaches 107 methods, DWD reaches the other 10 and is **optional
    and absent by default**.
 
-5. **`SmimeInfo` carries `encryptedKeyPassword` on a READ path** (`smimeInfo.get`/`list`). Withhold
+6. **`SmimeInfo` carries `encryptedKeyPassword` on a READ path** (`smimeInfo.get`/`list`). Withhold
    the field, keep the tool — `csa-skilljar`'s webhook-secret precedent. CSE keypair reads are
    fine: they return `pem` (public) and an opaque external KACLS reference, no private key.
 
-6. **There is no `deprecated` flag in Discovery.** `inventory.py` detects deprecation by
+7. **There is no `deprecated` flag in Discovery.** `inventory.py` detects deprecation by
    string-matching `description`, which is prose and will drift. Any claim this repo makes about a
    method being current is only as good as the snapshot date in `specs/PROVENANCE.md`.
 
@@ -95,6 +103,9 @@ curl -s -X POST https://gmailmcp.googleapis.com/mcp/v1 -H 'Content-Type: applica
 
 - **Never commit API response bodies.** Record counts and shapes, never rows. Message bodies,
   subjects, sender addresses, attendee lists and calendar event titles are all personal data.
+- **An `.eml` on disk is the whole message** — a larger exposure than any API response here.
+  Analysis fixtures built from real phishing mail must be sanitised of recipient data before they
+  are committed, and `.eml` output paths must never default inside the repository.
 - **Never commit credentials.** `.env`, `token*.json`, `credentials.json`, `client_secret*.json`
   are gitignored *in this repo*, not only in someone's global config.
 - **Redact in `__repr__`.** Domain objects holding message or attendee data need hand-written
