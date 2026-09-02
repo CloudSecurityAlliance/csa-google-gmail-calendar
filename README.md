@@ -7,8 +7,18 @@ project_tracker_record: not yet created
 project_source: github:CloudSecurityAlliance-Internal/CINO-Projects/projects/CloudSecurityAlliance/csa-google-gmail-calendar
 ```
 
-A Python library and local stdio MCP server over the Gmail and Google Calendar REST APIs,
-targeting **100% API coverage**.
+A Python library and local stdio MCP server over the Gmail and Google Calendar REST APIs, on two
+pillars:
+
+1. **100% API coverage** — all 117 methods, against the 21 the official servers reach.
+2. **Message analysis** — fetch a message as raw MIME and check it: SPF/DKIM/DMARC/ARC
+   verification, header-presentation sanity (`Reply-To` vs `From`, brand display names, lookalike
+   domains), spam heuristics, and prompt-injection detection.
+
+The second pillar exists because the first is not enough. A phish impersonating Mailchimp, with a
+`Reply-To` on an unrelated free Google account, was delivered to a CSA inbox — and it would have
+**passed** SPF, DKIM and DMARC, because those authenticate the sending *domain*, not the claimed
+*identity*. See §9 of the design spec.
 
 > **Status: API surface enumerated. Nothing implemented.** There is no `src/` yet. This
 > repository currently holds the upstream Discovery snapshots, the operation inventory, and the
