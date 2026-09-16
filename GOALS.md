@@ -84,6 +84,36 @@ security consequence is the one nobody has built.
   here, and not in [`csa-google-workspace-audit`](https://github.com/CloudSecurityAlliance/csa-google-workspace-audit),
   which is scoped to log reading.
 
+  **A configured destination allowlist, and a loud refusal.** Google narrows the risk for us first:
+  ten Gmail methods — `updateAutoForwarding`, `delegates.*`, `forwardingAddresses.create/delete`,
+  `sendAs.create/delete/verify` — cannot be called with user OAuth at all. So *registering* a
+  forwarding destination is structurally out of reach here. What remains reachable is the one the
+  README names as canonical: **a filter that forwards to an already-verified address and archives the
+  original.**
+
+  Against that, the server carries an operator-configured allowlist of permitted forward
+  destinations — domains or addresses — and refuses any filter action targeting anything else.
+
+  Two honest claims about what that buys, because it is easy to overclaim:
+
+  - **It does not bind the credential.** Anyone holding the token can bypass this server entirely
+    with `curl`. A client-side gate is not a security boundary — see
+    [[enforcement-an-ai-can-edit-is-not-enforcement]].
+  - **It does bind the threat that actually applies here.** The realistic path is not a stolen token;
+    it is an agent reading a hostile message and being induced to act. That agent acts *through* this
+    server, so the allowlist is squarely in its way. Mail is the surface where hostile input is
+    expected, which is why this project treats injection as a product concern rather than a research
+    one.
+
+  **And the refusal is the more valuable half.** A refused forward is a logged, attributable event
+  naming the message that prompted it. An attacker using the raw token produces no signal at all. So
+  the gate converts the most likely attack from silent to noisy, which is worth more than the
+  fraction of attacks it prevents. A gate that refuses quietly teaches nothing; this one must alert.
+
+  **What it cannot see.** `delegates.list` also requires DWD, so this server cannot enumerate who
+  else can read a mailbox using that mailbox's own token. Delegation is invisible from the credential
+  the victim holds — which is the strongest argument for the future `csa-google-gmail-audit`.
+
 ## Long-term
 
 - **Useful outside CSA.** Any Google account holder gets a checked mailbox, free and open source.
