@@ -21,7 +21,11 @@ Created 2026-09-16.
   [CINO-PE #49](https://github.com/CloudSecurityAlliance-Internal/CINO-Platform-Engineering/issues/49).
   It already regenerates the matrix from the Discovery snapshots; it needs a cadence and a diff.
 - [ ] **Watch the official servers' tool lists too**, not just the APIs. The 22% coverage figure is a
-  moving target and the captures are from 2026-09-01.
+  moving target. Last checked 2026-09-16: both tool lists unchanged, schemas moved — see the drift
+  re-check in [`research/2026-09-01-mcp-server-landscape.md`](research/2026-09-01-mcp-server-landscape.md).
+- [ ] **`apply_sensitive_*_label` may be on the way out.** As of 2026-09-16 Google's descriptions
+  steer models to `trash_*` / `mark_*_spam` instead. `scripts/coverage.py` maps both onto
+  `.trash` / `.modify`; re-check that mapping if the tools disappear.
 
 ## Repo standards
 

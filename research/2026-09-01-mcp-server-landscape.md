@@ -221,3 +221,31 @@ done
 No credential required. Both servers are in Developer Preview and the published tool list is not a
 commitment — if the withheld-six inference is right, the public list grows as the preview matures.
 Re-run and diff before trusting anything above.
+
+## Drift re-check, 2026-09-16
+
+Re-ran the capture above. **Both tool lists are unchanged: 23 Gmail, 9 Calendar, same names,
+same order.** Every mapping and count in this document still holds, and so does the 21-of-117
+figure. Fresh captures are `research/captures/2026-09-16-*-tools-list.json`. What moved is
+inside the schemas:
+
+- **`create_label` gained `labelListVisibility` and `messageListVisibility` inputs**, and both
+  they and `labelType` now appear in the `create_label` / `list_labels` output. This is
+  `users.labels.create` getting closer to its REST body — a deepening of a method already
+  counted as reached, not a new method.
+- **`apply_sensitive_message_label` and `apply_sensitive_thread_label` are being talked down.**
+  Both descriptions now open *"Prefer `trash_*` or `mark_*_spam` instead"*, and `label_message`
+  / `label_thread` were rewritten to point at the specific tools rather than at the sensitive-label
+  pair. The tools still exist; Google is routing models away from them. Worth watching as a
+  removal candidate, since this repo maps both onto `.trash` / `.modify`.
+- **`get_thread` now states `RAW` format is not supported**, closing a gap the enum left open.
+- **`search_threads` gained query-construction guidance** — prefer unquoted keywords, use `OR`
+  and grouping, avoid copying long subjects verbatim. Prose only; the schema is unchanged.
+- **Calendar event output gained an expanded `label` object** (`id`, `displayName`,
+  `backgroundColor`) on all seven event-returning tools. Note this is a *server-side expansion*:
+  Calendar v3 REST returns `Event.eventLabelId`, a bare string, with the label bodies living on
+  the calendar under `LabelProperties.eventLabels`. Both were already in the 2026-08-31 snapshot
+  and neither changed. The MCP server denormalizes; the REST API did not gain anything.
+
+Neither Discovery document gained or lost a method or a scope in the same window — see
+[`specs/PROVENANCE.md`](../specs/PROVENANCE.md).
