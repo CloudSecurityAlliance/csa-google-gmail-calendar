@@ -64,8 +64,25 @@ security consequence is the one nobody has built.
 - **Close the mutating surface deliberately.** 76 of 117 methods mutate. They arrive gated and off,
   per family, with the irreversible ones — `delete`, `trash`, anything that sends — treated the way
   `csa-zendesk` treats a public reply.
-- **Calendar administration, which nobody else offers** — calendars and ACLs, the two zero-coverage
-  families that are not settings.
+- **The three gaps nobody else has, named because "nobody has this" is the argument for building it:**
+
+  | Gap | Methods | Why it is unreached |
+  |---|---:|---|
+  | `calendar.calendars` | 7 | Google's server does events, not calendars. Create/delete a calendar is unreachable anywhere |
+  | `calendar.acl` | 7 | Who can see a calendar. No official surface touches it |
+  | `gmail.users.settings.filters` | 4 | Filter rules — and the scope trap below |
+
+  **The filters gap has a cost the other two do not.** `settings.filters` and its neighbours
+  (`delegates`, `forwardingAddresses`, `getAutoForwarding`) accept exactly four scopes and **none is
+  settings-only-read**: `gmail.readonly` reads every message body in every mailbox, and
+  `gmail.settings.basic` can *create* filters and forwarding rules. So reaching filters at all means
+  taking one of those two, and the honest framing is that this project offers the **capability** —
+  list, create, delete a filter for the operating user, under their own credential and their own ACLs.
+
+  Auditing filters across a tenant for signs of compromise is a different job with a different
+  credential, and belongs to a future `csa-google-gmail-audit` in the shape GAM occupies today — not
+  here, and not in [`csa-google-workspace-audit`](https://github.com/CloudSecurityAlliance/csa-google-workspace-audit),
+  which is scoped to log reading.
 
 ## Long-term
 
