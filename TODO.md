@@ -5,6 +5,20 @@ the linked file or GitHub issue; nothing else needs searching.
 
 Created 2026-09-16.
 
+## Naming and disposal
+
+- [x] **Name destruction as destruction** ✅ **2026-09-25** —
+  [ADR-001](DECISIONS-ADR/ADR-001-a-tool-name-is-a-claim.md). Four tools, none called
+  `delete_email`: `archive_email` (default disposal), `trash_email` / `untrash_email` (reversible),
+  `delete_email_permanently` and `empty_trash` (both `mail.delete`, off by default, L0 per
+  `AUTONOMY-POLICY.md`). **Archive is what "get rid of it" means**; trashing is asked for by name;
+  permanent deletion is asked for by a human.
+- [ ] **Check the rest of the vocabulary against the same rule before it is built.** ADR-001 fixes
+  the instance the survey found. The rule it states — *a tool name is a claim made to a reader who
+  cannot check it* — has not been applied to the other ~70 planned tools. The survey's other
+  finding is the place to start: **none of the five surveyed surfaces warns a model before an
+  irreversible action**, so there is no incumbent to copy here and no prior art to inherit.
+
 ## Build
 
 - [ ] **The library, before any tool.** Typed client over Gmail v1 and Calendar v3 with the `Backend`
