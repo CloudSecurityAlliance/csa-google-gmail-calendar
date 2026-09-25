@@ -199,6 +199,59 @@ shown 8, however identical the eight are." `google` is now exactly definable —
 publishes — and checkable against `research/captures/`. A flavour **says what it is hiding**, in
 the server instructions and in `describe_configuration`.
 
+### The minimum set: what email needs to work
+
+The ~74 above is the target. This is the subset below which email is not usable, derived from
+`analysis/operation-inventory.csv` rather than from taste — **31 tools in six tiers**.
+
+| Tier | Tools | |
+|---|---:|---|
+| Reading | 6 | `search_messages` `get_message` `get_thread` `list_threads` `get_attachment` `list_labels` |
+| Composing | 6 | `create_draft` `update_draft` `get_draft` `list_drafts` `delete_draft` `send_draft` |
+| Sending | 4 | `send_message` `reply` `reply_all` `forward` |
+| Organising | 7 | `archive_email` `archive_thread` `modify_message_labels` `modify_thread_labels` `mark_read` `mark_unread` `create_label` |
+| Disposal | 6 | `trash_email` `trash_thread` `untrash_email` `untrash_thread` `mark_spam` `unmark_spam` |
+| Keeping up | 2 | `list_history` `get_profile` |
+
+Full draft CRUD is in the minimum because a draft is the safe rehearsal for a send, and `reply_all`
+is its own tool because confusing it with `reply` is a public incident rather than a mistake.
+
+Thirty-one sits between the two empirical reference points — the community server's 30 and Google's
+official 23 — which is weak evidence the shape is right rather than invented. It is also the
+natural third flavour: `core`, below `google`.
+
+**Two boundaries agree without being made to.** Every tool above fits inside `gmail.modify` or
+narrower, and the whole reading tier plus `list_history` and `get_profile` fits inside
+`gmail.readonly`. Nothing here needs `https://mail.google.com/`, which is required by exactly the
+four permanent-destroy operations — the ones ADR-001 put behind `mail.delete`, off by default. The
+capability boundary and the scope boundary landed in the same place independently.
+
+#### Three things a person names that the API does not have
+
+**There is no move.** Gmail has no folders. `users.messages.modify` takes `addLabelIds` /
+`removeLabelIds`, and every organisational act is that one call: *move to folder* is add label,
+*archive* is remove `INBOX`, *mark read* is remove `UNREAD`, *star* is add `STARRED`, *move to
+spam* is add `SPAM`. One endpoint wearing six hats, which is why §5's expand-where-it-carries-a-
+distinction rule does most of its work here: a model choosing between `archive_email` and
+`trash_email` chooses correctly in a way it does not when choosing `addLabelIds` values.
+
+**There is no attachment upload.** The inventory holds exactly one attachment operation —
+`users.messages.attachments.get`. Sending is a MIME multipart body riding on `drafts.create`,
+`drafts.update` and `messages.send`. So attachments-out is an argument on four existing tools and a
+library problem behind it, not a tool of its own (issue #8).
+
+**There is no receive.** Nothing pushes to a client. `messages.list` polls and `history.list` gives
+increments; `users.watch` needs a Cloud project, a Pub/Sub topic and a public HTTPS endpoint, so it
+cannot work in the only deployment this server supports and should be omitted rather than shipped
+broken (issue #9).
+
+#### What the remaining ~43 is
+
+Settings (45 methods → ~19 tools) and Calendar (~23). None of it is needed for email to work.
+**Filters are the tempting early addition and the one to hold**: a filter is a standing instruction
+that keeps acting after the session ends, which is a different consequence class from everything in
+the table above.
+
 ## 6. What the model is told
 
 Neither official server says anything at server level: no `instructions` in `initialize`, and
@@ -341,7 +394,8 @@ requirements.
 
 Settled: full coverage; the four-verb capability model with Google's boundaries as a floor; the
 default posture rule; two credentials with DWD optional; copy/fill/better alignment; flavours;
-the omissions in §7.
+the omissions in §7; the 31-tool minimum set in §5 and the tier it ships in.
 
 Not settled: the ~75 tool count; the exact per-family collapsing of the 45 settings methods; the
-two assumptions in §8.
+two assumptions in §8; how attachments reach the server (issue #8); whether `list_history` makes
+the server stateful (issue #9).
