@@ -369,6 +369,114 @@ CSA_GGC_CAPABILITIES=none                          # nothing enabled (auth + con
 it out of its own login or its own introspection. Call `describe_configuration` to see exactly
 what the active flavour hides and why.
 
+## Setting up the Google side
+
+This server has no hosted component. It talks to Google as **you**, using an OAuth client from a
+Google Cloud project **you control** — so before it can do anything, that project has to exist.
+About five minutes, once.
+
+Replace the placeholders with your own values throughout.
+
+### 1. Create a project
+
+[console.cloud.google.com/projectcreate](https://console.cloud.google.com/projectcreate)
+
+| | placeholder | notes |
+|---|---|---|
+| Project name | `<your-org> Gmail/Calendar MCP` | |
+| Project ID | `<your-org>-gmail-calendar-mcp` | globally unique, 6–30 chars, lowercase |
+
+### 2. Enable the two APIs
+
+With that project selected:
+
+- **Gmail API** — [library/gmail.googleapis.com](https://console.cloud.google.com/apis/library/gmail.googleapis.com)
+- **Google Calendar API** — [library/calendar-json.googleapis.com](https://console.cloud.google.com/apis/library/calendar-json.googleapis.com)
+
+A granted scope is **not** the same as an enabled API. If you skip this, sign-in succeeds and the
+first call fails with `SERVICE_DISABLED` — and because enablement is per-API, Gmail can work while
+Calendar 403s.
+
+### 3. Configure the consent screen — and read this part before choosing
+
+[APIs & Services → OAuth consent screen](https://console.cloud.google.com/apis/credentials/consent)
+(Google now labels this "Google Auth Platform").
+
+**User type is the decision that matters, because Gmail's scopes are *restricted* scopes:**
+
+| | **Internal** | **External** |
+|---|---|---|
+| who can authorize | only accounts in your Google Workspace organization | any Google account |
+| app verification | **waived** | required before general use |
+| annual CASA security assessment | **waived** | required for restricted scopes |
+| needs a Workspace org | yes | no |
+
+If you have a Google Workspace organization, choose **Internal**. Google waives both verification
+and the annual third-party security assessment, which for restricted Gmail scopes is the
+difference between five minutes and a procurement exercise.
+
+If you do not have a Workspace org, you can still run this: choose **External**, leave the app in
+**Testing**, and add your own account under *Test users*. Testing mode caps you at 100 test users
+and re-consent every 7 days, which is fine for one person and not a way to deploy to a team.
+
+**The app name is read by whoever consents**, at the moment they decide whether to hand over a
+mailbox. Use something they can resolve — `<Your Org> Gmail/Calendar MCP`, not an internal
+codename.
+
+If the app is in Testing with an explicit scope list, add:
+
+```
+.../auth/gmail.modify      .../auth/calendar.events
+.../auth/gmail.send        .../auth/calendar.calendarlist.readonly
+                           .../auth/calendar.calendars.readonly
+                           .../auth/calendar.freebusy
+```
+
+Six, not eight: `gmail.modify` subsumes `gmail.readonly` and `gmail.compose`, and the server
+collapses subsumed scopes before requesting them, so the consent screen asks for the smallest set
+that still works. Enabling `mail.delete` adds `https://mail.google.com/`; leaving it off — the
+default — means the full-mailbox scope is never requested.
+
+### 4. Create the OAuth client
+
+[Credentials](https://console.cloud.google.com/apis/credentials) → **Create credentials** →
+**OAuth client ID** → Application type **Desktop app**. Download the JSON.
+
+A Desktop client's "secret" is not really secret — Google documents it as such. The security comes
+from the user consent step and the `http://localhost` redirect, not from the file being hidden.
+
+### 5. Put it where the server looks
+
+```bash
+mkdir -p ~/.csa_google_gmail_calendar && chmod 700 ~/.csa_google_gmail_calendar
+mv ~/Downloads/client_secret_*.json ~/.csa_google_gmail_calendar/client_secret.json
+chmod 600 ~/.csa_google_gmail_calendar/client_secret.json
+```
+
+Or point `CSA_GGC_CLIENT_SECRETS` somewhere else.
+
+### 6. Sign in
+
+```bash
+csa-google-gmail-calendar login
+```
+
+A browser opens. **Check the consent screen against what you expect** — it should list the six
+scopes above and no more. That screen is the clearest view you will get of what this server can
+reach, and it is worth reading rather than clicking through.
+
+The token lands at `~/.csa_google_gmail_calendar/token.json`, mode 0600, written atomically.
+
+### If something goes wrong
+
+| symptom | cause |
+|---|---|
+| `Error 403: org_internal` | The client is **Internal** and you signed in with an account outside that organization. Easy to hit with several Google accounts in one browser. |
+| `access_denied` immediately | Consent was refused — or the app is in Testing and your account is not on the test-user list, or a requested scope is not on the configured scope list. |
+| `SERVICE_DISABLED` | Step 2 was skipped for that API. Per-API, so one product can work while the other fails. |
+| `login` says already authorized but calls fail | The cached token may come from a **different** OAuth client — valid, correctly scoped, wrong project. Re-run with `--force`. |
+| Tools report no cached credentials | Deliberate: the server starts without a token so the remedy reaches you here rather than as a silent startup crash. |
+
 ## Configuration
 
 | Variable | Purpose | Default |
