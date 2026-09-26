@@ -96,14 +96,45 @@ def test_over_the_message_ceiling_is_refused_with_both_numbers(tmp_path):
 
 
 def test_base64_overhead_counts_toward_the_ceiling(tmp_path):
-    """A 19 MB file is well over the 25 MB ceiling once its two base64 passes are counted
-    (see the module docstring) - checking the file size alone passes it and Google then rejects
-    the send, which is a worse place to find out."""
+    """A 19 MB file is over the 25 MB ceiling once RFC822's single base64 pass is counted
+    (19 x ~1.35 ~= 25.7 MB - see the module docstring's measured table) - checking the file
+    size alone passes it and Google then rejects the send, which is a worse place to find out.
+    """
     d = tmp_path / "a"
     d.mkdir()
     (d / "big.bin").write_bytes(b"\0" * (19 * 1024 * 1024))
     with pytest.raises(PolicyError, match="25"):
         _mime.build(["a@example.com"], "s", "b", attachments=["big.bin"],
+                    attach_policy=AttachmentPolicy(str(d)))
+
+
+def test_a_file_comfortably_under_the_rfc822_boundary_is_accepted(tmp_path):
+    """REGRESSION for the first review round: this module used to compare the API `raw`
+    payload (~1.80x the file) against `MESSAGE_LIMIT`, which caps files at ~13.7 MB instead of
+    the ~18.2 MB Gmail's own 25 MB RFC822 limit actually allows. A 15 MB file (RFC822 ~= 20.3 MB)
+    must be ACCEPTED, not refused with a message that reads as nonsense ("15 MB is over 25 MB").
+    """
+    d = tmp_path / "a"
+    d.mkdir()
+    (d / "ok.bin").write_bytes(b"\0" * (15 * 1024 * 1024))
+    msg = _parse(_mime.build(["a@example.com"], "s", "b", attachments=["ok.bin"],
+                             attach_policy=AttachmentPolicy(str(d))))
+    assert next(msg.iter_attachments()).get_filename() == "ok.bin"
+
+
+def test_a_file_just_over_the_rfc822_boundary_is_refused(tmp_path):
+    """The other side of the same boundary: 18 MB (RFC822 ~= 24.3 MB) still fits; 19 MB
+    (RFC822 ~= 25.7 MB) does not. Together with the 15 MB acceptance test above, this pins the
+    real ~18.5 MB crossover rather than the ~13.7 MB the pre-fix comparison produced."""
+    d = tmp_path / "a"
+    d.mkdir()
+    (d / "fits.bin").write_bytes(b"\0" * (18 * 1024 * 1024))
+    _mime.build(["a@example.com"], "s", "b", attachments=["fits.bin"],
+               attach_policy=AttachmentPolicy(str(d)))  # must not raise
+
+    (d / "too_big.bin").write_bytes(b"\0" * (19 * 1024 * 1024))
+    with pytest.raises(PolicyError, match="25"):
+        _mime.build(["a@example.com"], "s", "b", attachments=["too_big.bin"],
                     attach_policy=AttachmentPolicy(str(d)))
 
 
@@ -135,10 +166,29 @@ def test_the_post_assembly_check_still_catches_a_wrong_estimate(tmp_path, monkey
     d = tmp_path / "a"
     d.mkdir()
     (d / "big.bin").write_bytes(b"\0" * (26 * 1024 * 1024))
-    monkeypatch.setattr(_mime, "_estimate_encoded_size", lambda **_: 0)
+    monkeypatch.setattr(_mime, "_estimate_rfc822_size", lambda **_: 0)
     with pytest.raises(PolicyError, match="assembled message"):
         _mime.build(["a@example.com"], "s", "b", attachments=["big.bin"],
                     attach_policy=AttachmentPolicy(str(d)))
+
+
+def test_the_post_assembly_guard_measures_rfc822_not_the_api_raw_payload(tmp_path, monkeypatch):
+    """REGRESSION for the first review round: the final guard must measure `msg.as_bytes()`,
+    not `base64.urlsafe_b64encode` of it - the latter is bigger again (see the module
+    docstring's measured table) and would make this guard describe the wrong size. Forcing the
+    pre-read estimate to say "fine" isolates the final guard so its own refusal message can be
+    checked directly: for a 20 MB file the RFC822 size is ~27 MB (over the 25 MB limit, so this
+    still refuses) but the API raw payload would be ~36 MB - the message must report the
+    former, not the latter.
+    """
+    d = tmp_path / "a"
+    d.mkdir()
+    (d / "big.bin").write_bytes(b"\0" * (20 * 1024 * 1024))
+    monkeypatch.setattr(_mime, "_estimate_rfc822_size", lambda **_: 0)
+    with pytest.raises(PolicyError, match="27") as excinfo:
+        _mime.build(["a@example.com"], "s", "b", attachments=["big.bin"],
+                    attach_policy=AttachmentPolicy(str(d)))
+    assert "36" not in str(excinfo.value)
 
 
 def test_an_html_alternative_produces_a_multipart_alternative():
@@ -269,18 +319,33 @@ def test_a_zero_byte_attachment_is_accepted(tmp_path):
     assert part.get_payload(decode=True) == b""
 
 
-# --- SIMPLE_UPLOAD_LIMIT: currently unused by `build()` itself (see the module docstring on
-# `upload_strategy`); this pins the one function in this module that does consume it. ---
+# --- SIMPLE_UPLOAD_LIMIT: a routing decision on the API `raw` payload (~1.80x the file), not
+# on the file itself or on the RFC822 size `MESSAGE_LIMIT` governs - see the module docstring
+# and `upload_strategy`'s own docstring for why those are three different numbers. ---
+
+def test_upload_strategy_flips_exactly_at_5_mb_of_api_payload_not_of_file():
+    """The boundary belongs to the ENCODED string `upload_strategy` is handed, not to any file
+    size - checked directly against synthetic strings so the boundary itself is pinned, with no
+    base64-expansion arithmetic in the way."""
+    just_under = "a" * (_mime.SIMPLE_UPLOAD_LIMIT - 1)
+    exactly_at = "a" * _mime.SIMPLE_UPLOAD_LIMIT
+    assert _mime.upload_strategy(just_under) == "simple"
+    assert _mime.upload_strategy(exactly_at) == "resumable"
+
 
 def test_upload_strategy_is_simple_under_the_limit():
     raw = _mime.build(["a@example.com"], "s", "b")
     assert _mime.upload_strategy(raw) == "simple"
 
 
-def test_upload_strategy_is_resumable_at_or_over_the_limit(tmp_path):
+def test_upload_strategy_is_resumable_for_a_file_smaller_than_the_upload_limit_itself(tmp_path):
+    """The point the review made explicit: a 3 MB file is well under `SIMPLE_UPLOAD_LIMIT`
+    (5 MB) by itself, but its RFC822 size is ~4.05 MB and its API `raw` payload - the quantity
+    actually being routed here - is ~5.4 MB, over the limit. `upload_strategy` must key off the
+    payload it is handed, not off any file size a caller happens to know about."""
     d = tmp_path / "a"
     d.mkdir()
-    (d / "f.bin").write_bytes(b"\0" * (6 * 1024 * 1024))
+    (d / "f.bin").write_bytes(b"\0" * (3 * 1024 * 1024))
     raw = _mime.build(["a@example.com"], "s", "b", attachments=["f.bin"],
                       attach_policy=AttachmentPolicy(str(d)))
     assert _mime.upload_strategy(raw) == "resumable"
