@@ -17,7 +17,6 @@ def test_default_posture_disables_what_persists_or_destroys():
     assert policy.CALENDAR_DELETE not in policy.DEFAULT_ENABLED
 
 
-@pytest.mark.xfail(strict=True, reason="backend.Backend arrives in Task 3")
 def test_every_backend_method_has_a_gate():
     """Fail-closed: a method with no gate is a method nobody decided about."""
     from csa_google_gmail_calendar.backend import Backend
