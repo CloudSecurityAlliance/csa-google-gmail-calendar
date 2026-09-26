@@ -40,13 +40,29 @@ deletion, in `unavailable`, if it is not), and the messages/threads this plan se
 at the end (trash, not permanent delete - there is no permanent-mail-delete tool either, and
 trash is the disposal primitive this server actually has).
 
-`get_attachment` and the auth-lifecycle tools (`authenticate`, `logout`) are DELIBERATELY not
-exercised - `get_attachment` because this plan cannot guarantee any message it can safely touch
-has a real attachment to fetch (fabricating one would need `CSA_GGC_ATTACH_DIR` configured and
-a file already on disk, neither of which this plan may assume), and the auth tools because
-`authenticate` is only useful on demand (`auth_status`, which IS exercised, says whether it is
-needed) and `logout` would end the session's own credential - the one action a demonstration
-must never take on somebody's behalf.
+## `get_attachment`, and the fixture it needs
+
+Fix round 1 (coordinator review, CINO 2026-09-26): the send_message step now attaches a small
+local file (a placeholder path under `CSA_GGC_ATTACH_DIR`, the same variable that governs both
+outgoing attachments and where a downloaded one is written), so the demo CREATES its own
+fixture instead of hoping the real mailbox happens to have one lying around. A `get_message`
+step reads that same self-sent message back to learn the attachment's id and filename, and
+`get_attachment` downloads it. If `CSA_GGC_ATTACH_DIR` is not configured, `send_message` itself
+would refuse (naming that variable) before any of this runs - the plan's own `advice` field
+says so, so the executor can skip straight to the next step rather than getting stuck on a
+refusal it could have predicted.
+
+## What is not demonstrated, and why - `_NOT_DEMONSTRATED`
+
+Three tools are deliberately absent from `_catalogue`, each with its own one-line reason kept in
+`_NOT_DEMONSTRATED` rather than only in prose here: `authenticate` (useful on demand, not as a
+forced step - `auth_status`, which IS exercised, already says whether it is needed),
+`logout` (would end the session's own credential mid-demo - the one action a demonstration must
+never take on somebody's behalf), and `demonstration_plan` itself (naming itself in its own plan
+is circular). `tests/test_demo.py` asserts every OTHER registered tool appears in `_catalogue`,
+so a tool added later and simply forgotten here fails that test rather than silently widening
+this set - the same shape as `scopes.py`'s `UNRANKED`, `policy.MAIL_DELETE`'s allow-list, and
+`test_mcp_capabilities.py`'s `_EXPECTED_OPEN_WORLD_HINT` map.
 """
 from __future__ import annotations
 
@@ -59,6 +75,18 @@ from mcp.server import MCPServer
 from ._base import LOCAL_READ, tool
 
 SELF = "<the authenticated user>"
+
+# Tools deliberately absent from `_catalogue`, each with its own reason - see the module
+# docstring's "What is not demonstrated" section. `tests/test_demo.py` asserts every OTHER
+# registered tool is named in `_catalogue`, so this dict is the one place a future omission has
+# to be written down rather than silently growing.
+_NOT_DEMONSTRATED: dict[str, str] = {
+    "authenticate": "useful on demand, not as a forced step - auth_status (which IS "
+                    "exercised) already says whether it is needed.",
+    "logout": "would end the session's own credential mid-demo - the one action a "
+             "demonstration must never take on somebody's behalf.",
+    "demonstration_plan": "naming itself in its own plan is circular.",
+}
 
 
 class DemoStep(TypedDict):
@@ -125,9 +153,24 @@ def _catalogue(run_id: str) -> list[tuple[str, dict[str, Any], str]]:
          "Send an existing draft as-is - self-addressed, irreversible once sent."),
         ("send_message", {"to": [SELF], "subject": "CSA demo message (safe to delete)",
                           "body": "Sent by csa-google-gmail-calendar's demonstration_plan, to "
-                                  "itself."},
-         "Sending tier: a brand-new self-addressed message. Its id and thread id feed every "
+                                  "itself.",
+                          "attachments": ["<a small local file already present under "
+                                         "CSA_GGC_ATTACH_DIR - if that variable is not "
+                                         "configured, send_message will refuse naming it; "
+                                         "drop the attachments argument and skip the "
+                                         "get_attachment step below instead>"]},
+         "Sending tier: a brand-new self-addressed message, carrying a small attachment so "
+         "get_attachment below has something real to fetch. Its id and thread id feed every "
          "organising/disposal step below."),
+        ("get_message", {"message_id": "<the same message id from send_message above>"},
+         "Read the self-sent message back to learn its attachment's id and filename - "
+         "get_message never inlines attachment bytes, only the metadata get_attachment needs."),
+        ("get_attachment",
+         {"message_id": "<the same message id from send_message above>",
+          "attachment_id": "<the attachment_id from the get_message result above>",
+          "filename": "<the matching filename from the same result>"},
+         "Download the attachment just sent - the one attachment operation Gmail's API has; "
+         "there is no upload tool because there is no attachments.upload endpoint to call."),
         ("reply", {"message_id": "<the message id from send_message above>",
                   "body": "Demo reply - self-addressed because the original was."},
          "Sending tier: reply resolves its own recipient from the original message's From, "
@@ -252,6 +295,11 @@ def register_demo_tools(app: MCPServer) -> None:
         return {
             "steps": steps,
             "unavailable": unavailable,
+            # Filtered to registered tools only: an entry for a tool this deployment never
+            # registered at all would confuse "not demonstrated" (a deliberate choice) with
+            # "not registered" (already covered by `unavailable`).
+            "not_demonstrated": {name: reason for name, reason in _NOT_DEMONSTRATED.items()
+                                if name in registered},
             "cleanup_possible": "delete_event" in registered,
             "advice": (
                 f"Every {SELF!r} placeholder must become the address whoami's OWN result "
@@ -259,5 +307,9 @@ def register_demo_tools(app: MCPServer) -> None:
                 f"cleanup_possible is false, tell the user the scratch calendar event needs "
                 f"deleting by hand before creating it. The label this plan creates "
                 f"(csa-demo-{run_id}) is not deleted at the end - there is no delete_label "
-                f"tool in this server yet; mention that if asked to leave no trace."),
+                f"tool in this server yet; mention that if asked to leave no trace. If "
+                f"CSA_GGC_ATTACH_DIR is not configured, send_message's attachments argument "
+                f"will be refused - drop it and skip the get_attachment step; every other step "
+                f"is unaffected. See not_demonstrated for the tools this plan intentionally "
+                f"never calls, and why."),
         }

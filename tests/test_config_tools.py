@@ -240,6 +240,14 @@ def test_flavour_from_env_refuses_an_unknown_value():
         _flavours.flavour_from_env({"CSA_GGC_FLAVOUR": "bogus"})
 
 
+def test_core_tools_is_exactly_31_per_spec_section_5():
+    """Fix round 1 (coordinator review, CINO 2026-09-26): `_flavours.py`'s own import-time
+    `assert len(CORE_TOOLS) == 31` is stripped under `python -O` - confirmed the whole suite
+    still passes with it gone. This is the same invariant as a REAL test, which `-O` cannot
+    remove: spec §5 derives exactly 31 tools as "what email needs to work"."""
+    assert len(_flavours.CORE_TOOLS) == 31
+
+
 def test_base_for_full_is_the_entire_declared_tool_universe():
     """`_base_for` is only reached with "core"/"google" through `allowed_tool_names` (which
     short-circuits "full" before calling it) - exercised directly here so its own defensive

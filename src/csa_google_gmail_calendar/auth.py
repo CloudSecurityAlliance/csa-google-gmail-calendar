@@ -139,7 +139,11 @@ _SUBSUMES: dict[str, tuple[str, ...]] = {
     f"{_BASE}calendar.events": (f"{_BASE}calendar.events.readonly",),
     "https://mail.google.com/": (f"{_BASE}gmail.modify", f"{_BASE}gmail.send"),
 }
-# An import-time sanity check on a declared ordering, not a security control.
+# An import-time sanity check on a declared ordering, not a security control - and not the
+# only thing pinning it: `tests/test_auth.py::test_subsumes_table_is_internally_consistent_
+# with_rank` asserts the identical invariant as a real test, which `python -O` cannot strip
+# (confirmed: this assert is gone under -O and that test still catches a violation).
+
 for _dominant, _dominated in _SUBSUMES.items():
     for _d in _dominated:
         assert scopes.RANK[_dominant] > scopes.RANK[_d], (  # nosec B101

@@ -3,7 +3,7 @@ names must exist, and it must send mail only to the authenticated user, never an
 an argument. See `demo.py`'s own module docstring for the full reasoning."""
 from csa_google_gmail_calendar import policy
 from csa_google_gmail_calendar.mcp import create_server
-from csa_google_gmail_calendar.mcp._tools.demo import SELF
+from csa_google_gmail_calendar.mcp._tools.demo import _NOT_DEMONSTRATED, SELF, _catalogue
 
 
 def _plan(flavour="full", enabled=None):
@@ -124,6 +124,52 @@ def test_cleanup_possible_reflects_whether_calendar_delete_is_enabled():
     assert plan_without["cleanup_possible"] is False
     _, plan_with = _plan(enabled=set(policy.ALL_CAPABILITIES))
     assert plan_with["cleanup_possible"] is True
+
+
+def test_get_attachment_is_demonstrated_against_a_fixture_the_demo_itself_creates():
+    """Fix round 1 (coordinator review, CINO 2026-09-26): get_attachment is a real tool with a
+    security-relevant containment check on a message-supplied filename - it must not be quietly
+    left out. The demo creates its own fixture (send_message's own attachment) rather than
+    hoping a real inbox happens to have one."""
+    _, plan = _plan()
+    named = {s["tool"] for s in plan["steps"]}
+    assert "get_attachment" in named
+    send_step = next(s for s in plan["steps"] if s["tool"] == "send_message")
+    assert "attachments" in send_step["arguments"]
+    attachment_step = next(s for s in plan["steps"] if s["tool"] == "get_attachment")
+    assert "message_id" in attachment_step["arguments"]
+    assert "attachment_id" in attachment_step["arguments"]
+    assert "filename" in attachment_step["arguments"]
+    # Every send-tier step in this plan targets the same self-sent message via an identical
+    # placeholder string ("<the same message id from send_message above>") - assert the
+    # get_attachment step follows that same convention rather than inventing its own.
+    assert attachment_step["arguments"]["message_id"] == \
+        "<the same message id from send_message above>"
+
+
+def test_every_registered_tool_is_either_demonstrated_or_explained():
+    """Fix round 1 (coordinator review, CINO 2026-09-26): a hand-authored catalogue nobody
+    checks is a catalogue that drifts silently. Every tool this server can EVER register
+    (full flavour, every capability enabled) must appear as a step in `_catalogue` OR be named
+    in `_NOT_DEMONSTRATED` with its own one-line reason - never neither, and never both."""
+    server = create_server(backend=None, policy=policy.Policy(frozenset(policy.ALL_CAPABILITIES)))
+    all_names = {t.name for t in server._tool_manager.list_tools()}
+    catalogued = {tool_name for tool_name, _, _ in _catalogue("test-run-id")}
+    explained = set(_NOT_DEMONSTRATED)
+
+    unexplained = all_names - catalogued - explained
+    assert not unexplained, f"neither demonstrated nor explained: {sorted(unexplained)}"
+
+    overlap = catalogued & explained
+    assert not overlap, f"both demonstrated and marked not-demonstrated: {sorted(overlap)}"
+
+    phantom_reasons = explained - all_names
+    assert not phantom_reasons, f"_NOT_DEMONSTRATED names a tool that does not exist: {sorted(phantom_reasons)}"
+
+
+def test_not_demonstrated_is_reported_back_in_the_plan():
+    _, plan = _plan()
+    assert plan["not_demonstrated"] == _NOT_DEMONSTRATED
 
 
 def test_running_the_plan_twice_produces_two_differently_named_labels():
