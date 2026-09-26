@@ -38,6 +38,26 @@ def test_refusal_names_the_env_var_that_would_enable_it():
         p.require("send_message")
 
 
+def test_refusal_for_an_off_by_default_capability_says_off_by_default():
+    """CALENDAR_DELETE ships off in DEFAULT_ENABLED, so a policy that never enabled it (the
+    common case - nobody had to narrow anything) should be told it's off by default."""
+    p = policy.Policy(frozenset({policy.CALENDAR_READ}))
+    with pytest.raises(PolicyError, match="off by default"):
+        p.require("delete_event")
+
+
+def test_refusal_for_a_narrowed_on_by_default_capability_does_not_say_off_by_default():
+    """Fix round 1: MAIL_SEND is in both IRREVERSIBLE and DEFAULT_ENABLED. A policy that
+    narrowed it away must not be told "off by default" - that's false, and it's this
+    deployment's own configuration that refused it, not the shipped default."""
+    p = policy.Policy(frozenset({policy.MAIL_READ}))
+    with pytest.raises(PolicyError) as excinfo:
+        p.require("send_message")
+    message = str(excinfo.value)
+    assert "off by default" not in message
+    assert "this deployment's own configuration" in message
+
+
 def test_policy_backend_refuses_before_the_inner_backend_is_touched():
     calls = []
 
@@ -90,9 +110,29 @@ def test_policy_backend_getattr_fails_closed_for_an_ungated_method():
         pb.not_a_real_backend_method()
 
 
-def test_policy_backend_does_not_forward_dunder_lookups():
-    """Dunder access must not reach `inner` (and must not recurse trying to read `_inner`
-    off a bare instance)."""
-    pb = policy.PolicyBackend(object(), policy.Policy())
-    with pytest.raises(AttributeError):
-        _ = pb.__nonexistent_dunder__
+def test_policy_backend_inner_is_reachable_and_unpoliced():
+    """Documents the boundary, rather than hiding it (ruling, fix round 1): `pb._inner` is a
+    plain instance attribute, resolved by normal `__getattribute__` before `__getattr__` (the
+    gate) is ever consulted. Calling through it bypasses the policy entirely - intended, since
+    `PolicyBackend` is a seam on the call path, not a sandbox around the object. Anyone holding
+    a Python reference to `pb` could equally have constructed an unpoliced backend directly,
+    so this is not a gap introduced by this class; it is what "a seam, not a sandbox" means."""
+    calls = []
+
+    class Spy:
+        def send_message(self, **kw):
+            calls.append(kw)
+            return {"sent": True}
+
+    spy = Spy()
+    pb = policy.PolicyBackend(spy, policy.Policy(frozenset({policy.MAIL_READ})))
+
+    assert pb._inner is spy
+
+    with pytest.raises(PolicyError):
+        pb.send_message(to=["a@example.com"], subject="x", body="y")
+    assert calls == []
+
+    result = pb._inner.send_message(to=["a@example.com"], subject="x", body="y")
+    assert result == {"sent": True}
+    assert calls == [{"to": ["a@example.com"], "subject": "x", "body": "y"}]

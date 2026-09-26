@@ -125,17 +125,57 @@ class Policy:
                 f"every Backend method must be declared in policy._GATES.")
         if gate.capability is None or gate.capability in self.enabled:
             return
+        capability = gate.capability
+        # Two different reasons a capability can be refused, and they must not share wording:
+        # one is that the SHIPPED DEFAULT already excludes it (MAIL_DELETE, CALENDAR_DELETE -
+        # "off by default" is simply true of them); the other is that this DEPLOYMENT'S OWN
+        # CONFIGURATION narrowed away something that ships on (MAIL_SEND is irreversible but
+        # is in DEFAULT_ENABLED - see the ruling on that in policy.py's module docstring
+        # history). Before this fix both cases got "off by default", which told an operator
+        # who had deliberately narrowed MAIL_SEND that the refusal came from the shipped
+        # default rather than from their own configuration - wrong, and confusing to debug.
+        if capability not in DEFAULT_ENABLED:
+            extra = (" This capability is off by default because the action it permits "
+                      "cannot be undone.")
+        elif capability in IRREVERSIBLE:
+            extra = (" This capability is on by default; it has been disabled by this "
+                      "deployment's own configuration, not by the shipped default.")
+        else:
+            extra = ""
         raise PolicyError(
-            f"{method} needs the {gate.capability!r} capability, which is not enabled. "
+            f"{method} needs the {capability!r} capability, which is not enabled. "
             f"Enabled: {sorted(self.enabled) or 'none'}. To enable it, set "
-            f"CSA_GGC_CAPABILITIES to a comma-separated list including {gate.capability!r}."
-            + (" This capability is off by default because the action it permits cannot be "
-               "undone." if gate.capability in IRREVERSIBLE else ""))
+            f"CSA_GGC_CAPABILITIES to a comma-separated list including {capability!r}."
+            + extra)
 
 
 class PolicyBackend:
     """Refuses before delegating. Attribute access is intercepted so a Backend method added
-    later is gated by construction rather than by somebody remembering to wrap it."""
+    later is gated by construction rather than by somebody remembering to wrap it.
+
+    **`_inner` is deliberately reachable, and that is not a bug.** `pb._inner` is a plain
+    instance attribute; `__getattribute__` resolves it the normal way and `__getattr__` (which
+    is where the gating lives) is never consulted, so `pb._inner.send_message(...)` runs
+    completely unpoliced. This class enforces a boundary on the *call path* through
+    `PolicyBackend` - it is a seam, not a sandbox around the object.
+
+    Hiding `_inner` (name-mangling, a closure instead of an attribute, `__slots__` without
+    exposing it) was considered and rejected. It would buy back no real authority: anyone
+    holding a `PolicyBackend` instance is running in the same process, with the same source
+    available, and could construct an unpoliced backend directly (`ApiBackend(...)`) instead
+    of reaching around this wrapper - hiding the attribute does not remove that path, it only
+    makes this class LOOK like an isolation boundary when it is not one. That is worse than
+    the current state: a future contributor who "fixes" the visible attribute would be
+    papering over a gap that is still there, and the appearance of a stronger guarantee is
+    itself a security regression, since it invites relying on containment this class was
+    never built to provide.
+
+    The threat this project actually models is a *model* calling *tools* through this
+    library - and a tool call cannot do arbitrary Python attribute access to reach `_inner`.
+    Code that already has a Python reference to the object and chooses to read `_inner` is
+    not the model; it is whoever embeds this library, and that party could bypass the policy
+    entirely by never constructing a `PolicyBackend` in the first place.
+    """
 
     def __init__(self, inner: Any, policy: Policy) -> None:
         self._inner = inner
