@@ -92,6 +92,44 @@ def test_read_returns_bytes_and_the_basename(root):
     assert content == b"%PDF-1.4 fake" and name == "ok.pdf"
 
 
+def test_read_refuses_an_escape_and_returns_no_bytes(root):
+    """FIX 1 (review round 1). Every other refusal test goes through resolve() — this is the
+    one that pins the property where it actually matters, at read(). If read() were ever
+    changed to re-derive a path from the string, call open() directly, or swallow PolicyError,
+    every other test in this file would stay green while the control quietly disappeared."""
+    secret = root.parent / "secret.txt"
+    secret.write_bytes(b"DISTINCTIVE-SECRET-PAYLOAD-92f1")
+    with pytest.raises(PolicyError, match="outside") as exc_info:
+        AttachmentPolicy(str(root)).read("../secret.txt")
+    assert b"DISTINCTIVE-SECRET-PAYLOAD-92f1" not in str(exc_info.value).encode()
+
+
+def test_read_refuses_a_symlink_to_outside_and_returns_no_bytes(root):
+    """The escape a reader is most likely to assume resolve() alone covers."""
+    secret = root.parent / "secret.txt"
+    secret.write_bytes(b"DISTINCTIVE-SECRET-PAYLOAD-92f1")
+    (root / "innocent.txt").symlink_to(secret)
+    with pytest.raises(PolicyError, match="outside") as exc_info:
+        AttachmentPolicy(str(root)).read("innocent.txt")
+    assert b"DISTINCTIVE-SECRET-PAYLOAD-92f1" not in str(exc_info.value).encode()
+
+
+def test_missing_root_directory_is_refused_at_construction_naming_the_variable(tmp_path):
+    """FIX 3 (review round 1). Path.resolve() defaults to strict=False, so a typo'd root would
+    otherwise construct silently and answer every call with a 'file does not exist' error that
+    sends the operator hunting for a missing file rather than a misconfigured directory."""
+    missing = tmp_path / "no-such-directory"
+    with pytest.raises(PolicyError, match="CSA_GGC_ATTACH_DIR"):
+        AttachmentPolicy(str(missing))
+
+
+def test_root_that_is_a_file_not_a_directory_is_refused_at_construction(tmp_path):
+    not_a_dir = tmp_path / "im-a-file"
+    not_a_dir.write_bytes(b"x")
+    with pytest.raises(PolicyError, match="CSA_GGC_ATTACH_DIR"):
+        AttachmentPolicy(str(not_a_dir))
+
+
 # --- Adversarial cases beyond the brief's 13 ---
 
 
@@ -156,5 +194,5 @@ def test_case_variant_of_the_root_never_escapes_the_containment_check(root):
     variant = pathlib.Path(str(root).upper()) / "OK.PDF"
     if not variant.exists():
         pytest.skip("this tmp path happens to be case-sensitive on this run")
-    with pytest.raises(PolicyError):
+    with pytest.raises(PolicyError, match="outside"):
         AttachmentPolicy(str(root)).resolve(str(variant))
