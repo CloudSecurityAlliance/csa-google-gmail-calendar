@@ -77,6 +77,65 @@ def test_auth_status_reports_ready_when_every_required_scope_is_present(tmp_path
     assert out["status"] == "ready"
 
 
+def _configure_client_secrets_with_project(tmp_path, monkeypatch, project_id="my-fake-project-123"):
+    secrets = tmp_path / "client_secret.json"
+    secrets.write_text(
+        '{"installed":{"client_id":"cid","client_secret":"cs",'
+        '"auth_uri":"https://accounts.google.com/o/oauth2/auth",'
+        '"token_uri":"https://oauth2.googleapis.com/token",'
+        f'"project_id":"{project_id}"}}}}')
+    monkeypatch.setenv("CSA_GGC_CLIENT_SECRETS", str(secrets))
+
+
+def test_auth_status_reports_client_project_when_no_credential_is_cached(tmp_path, monkeypatch):
+    monkeypatch.setenv("CSA_GGC_TOKEN_PATH", str(tmp_path / "token.json"))
+    _configure_client_secrets_with_project(tmp_path, monkeypatch)
+    server = create_server(backend=None, policy=policy.Policy())
+    out = _call(server, "auth_status")
+    assert out["status"] == "no_credential"
+    assert out["client_project"] == "my-fake-project-123"
+
+
+def test_auth_status_reports_client_project_when_scope_short(tmp_path, monkeypatch):
+    token_path = tmp_path / "token.json"
+    monkeypatch.setenv("CSA_GGC_TOKEN_PATH", str(token_path))
+    _configure_client_secrets_with_project(tmp_path, monkeypatch)
+    token_path.write_text(
+        '{"refresh_token": "r", "client_id": "c", "client_secret": "s", '
+        '"token_uri": "https://oauth2.googleapis.com/token", '
+        '"scopes": ["https://www.googleapis.com/auth/gmail.readonly"]}')
+    server = create_server(backend=None,
+                           policy=policy.Policy(frozenset({policy.MAIL_READ, policy.CALENDAR_READ})))
+    out = _call(server, "auth_status")
+    assert out["status"] == "scope_short"
+    assert out["client_project"] == "my-fake-project-123"
+
+
+def test_auth_status_reports_client_project_when_ready(tmp_path, monkeypatch):
+    token_path = tmp_path / "token.json"
+    monkeypatch.setenv("CSA_GGC_TOKEN_PATH", str(token_path))
+    _configure_client_secrets_with_project(tmp_path, monkeypatch)
+    token_path.write_text(
+        '{"refresh_token": "r", "client_id": "c", "client_secret": "s", '
+        '"token_uri": "https://oauth2.googleapis.com/token", '
+        '"scopes": ["https://www.googleapis.com/auth/gmail.readonly"]}')
+    server = create_server(backend=None, policy=policy.Policy(frozenset({policy.MAIL_READ})))
+    out = _call(server, "auth_status")
+    assert out["status"] == "ready"
+    assert out["client_project"] == "my-fake-project-123"
+
+
+def test_auth_status_reports_client_project_as_none_when_no_client_secrets_are_configured(
+        tmp_path, monkeypatch):
+    # An explicit, nonexistent path - not `delenv` - so this does not depend on whether the
+    # machine it runs on happens to have a real default client-secrets file on disk.
+    monkeypatch.setenv("CSA_GGC_CLIENT_SECRETS", str(tmp_path / "absent-client-secret.json"))
+    monkeypatch.setenv("CSA_GGC_TOKEN_PATH", str(tmp_path / "token.json"))
+    server = create_server(backend=None, policy=policy.Policy())
+    out = _call(server, "auth_status")
+    assert out["client_project"] is None
+
+
 def test_auth_status_makes_no_network_call(tmp_path, monkeypatch):
     """The whole point of the three states: `auth_status` must never refresh a token, which is
     the one operation on this path that talks to the network. `auth._refresh` is the exact

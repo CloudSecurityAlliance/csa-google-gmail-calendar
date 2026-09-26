@@ -132,11 +132,19 @@ def login(settings: Settings, env: Mapping[str, str], *, force: bool = False, ou
                   f"Use `login --force` to authorize again.", file=out)
             return 0
 
+    # Named BEFORE the browser opens: this is the last moment a person can still stop, and the
+    # consent screen they are about to see is titled with this project's app name - so the two
+    # are checkable against each other right here, rather than only after a 403 names the
+    # project a call actually ran against (see `auth.client_project_id`'s docstring for the
+    # incident this is fixing).
+    project = auth.client_project_id(client_secrets)
     print(f"Opening a browser to authorize access to your Google Mail and Calendar.\n"
+          f"  project: {project or 'unknown (could not read the project id from the client secrets)'}\n"
           f"  token cache: {settings.token_path}", file=out)
     # force=True bypasses the cache but deletes nothing: the old token is replaced only once a
     # new one exists, so a cancelled consent leaves the previous one working.
     with _branded_success_page():
         auth.load_credentials(client_secrets, settings.token_path, required, force=force)
-    print("Authorized. The MCP server can now start without prompting.", file=out)
+    print(f"Authorized against project {project or 'unknown'}. "
+          f"The MCP server can now start without prompting.", file=out)
     return 0

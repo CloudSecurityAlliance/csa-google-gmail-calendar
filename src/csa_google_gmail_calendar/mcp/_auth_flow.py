@@ -170,11 +170,15 @@ def consent_url(flow) -> str:
     return str(url)
 
 
-def finish(flow, redirect_uri: str, token_path: str) -> None:
+def finish(flow, redirect_uri: str, token_path: str, client_project: str | None = None) -> None:
     """Exchange the redirect for a token and persist it with the usual hardening.
 
     Passing the full `authorization_response` (not a bare code) is deliberate: oauthlib
     validates the `state` parameter from it.
+
+    `client_project` is the Google Cloud project the caller's client-secrets file belongs to
+    (`auth.client_project_id`) - passed through so `_write_token` can record it on the token it
+    is about to write, the same way the CLI `login` path does for `load_credentials`.
     """
     flow.fetch_token(authorization_response=redirect_uri)
-    _write_token(token_path, flow.credentials)
+    _write_token(token_path, flow.credentials, client_project)

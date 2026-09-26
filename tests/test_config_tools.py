@@ -96,6 +96,41 @@ def test_describe_configuration_reports_scopes_insufficient_when_short(tmp_path,
     assert out["scopes_sufficient"] is False
 
 
+def test_describe_configuration_reports_the_client_project_from_the_configured_client_secrets(
+        tmp_path, monkeypatch):
+    secrets = tmp_path / "client_secret.json"
+    secrets.write_text(
+        '{"installed":{"client_id":"cid","client_secret":"cs",'
+        '"auth_uri":"https://accounts.google.com/o/oauth2/auth",'
+        '"token_uri":"https://oauth2.googleapis.com/token",'
+        '"project_id":"my-fake-project-123"}}')
+    monkeypatch.setenv("CSA_GGC_CLIENT_SECRETS", str(secrets))
+    server = create_server(backend=None, policy=policy.Policy())
+    out = _call(server, "describe_configuration")
+    assert out["client_project"] == "my-fake-project-123"
+
+
+def test_describe_configuration_reports_no_client_project_when_unconfigured(tmp_path, monkeypatch):
+    # An explicit, nonexistent path - not `delenv` - so this test does not depend on whether the
+    # machine it runs on happens to have a real default client-secrets file on disk (the same
+    # convention `test_describe_configuration_never_returns_the_token_path_or_token_contents`
+    # already uses below).
+    monkeypatch.setenv("CSA_GGC_CLIENT_SECRETS", str(tmp_path / "absent-client-secret.json"))
+    server = create_server(backend=None, policy=policy.Policy())
+    out = _call(server, "describe_configuration")
+    assert out["client_project"] is None
+
+
+def test_describe_configuration_reports_no_client_project_for_a_malformed_client_secrets_file(
+        tmp_path, monkeypatch):
+    secrets = tmp_path / "client_secret.json"
+    secrets.write_text("{not json")
+    monkeypatch.setenv("CSA_GGC_CLIENT_SECRETS", str(secrets))
+    server = create_server(backend=None, policy=policy.Policy())
+    out = _call(server, "describe_configuration")
+    assert out["client_project"] is None
+
+
 def test_describe_configuration_never_returns_the_token_path_or_token_contents(
         tmp_path, monkeypatch):
     """The stricter bar `config.py`'s own module docstring states: this tool's output must not

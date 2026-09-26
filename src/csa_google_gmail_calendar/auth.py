@@ -495,8 +495,35 @@ def _refuse_symlink(path: str) -> None:
         raise OSError(errno.ELOOP, "refusing to write the token through a symlink", path)
 
 
-def _write_token(token_path: str, creds: Credentials) -> None:
+def _stored_client_project(token_path: str) -> str | None:
+    """The `client_project` already recorded in `token_path`, or `None`.
+
+    Best-effort, never raises: a missing file, unreadable file, or file without that key all
+    read as `None`. Exists so a rewrite that does not know the OAuth client in hand - a token
+    refresh, which carries only the token itself - does not silently ERASE a project id an
+    earlier write recorded. Read the CURRENT on-disk content, before it is replaced.
+    """
+    try:
+        with open(token_path, encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return None
+    project = data.get("client_project") if isinstance(data, dict) else None
+    return str(project) if project else None
+
+
+def _write_token(token_path: str, creds: Credentials, client_project: str | None = None) -> None:
     """Write the token cache, atomically.
+
+    `client_project` records which Google Cloud project issued this token - see
+    `client_project_id`'s docstring for why that is not a secret - so a cached credential can
+    be traced to its origin later even without the client-secrets file that produced it still
+    being present. `Credentials.to_json()` only serialises the fields the `Credentials` class
+    itself knows about, so this key is added onto that JSON afterward rather than being a
+    `Credentials` attribute. When the caller does not have a project id in hand - a refresh
+    path that owns only the token, not the client-secrets file - whatever project id
+    `token_path` already recorded is carried forward (`_stored_client_project`) rather than
+    dropped: without that, the field would vanish on the very first refresh.
 
     Fix round 1, item 2 — DIVERGES from `csa-google-workspace` and should be backported there.
     The source project opens `token_path` directly with `O_TRUNC`, which is not atomic: a
@@ -535,11 +562,15 @@ def _write_token(token_path: str, creds: Credentials) -> None:
         os.makedirs(token_dir, exist_ok=True)
         _harden(token_dir)              # only harden a dir we created; don't mutate a caller's (#4)
     _refuse_symlink(token_path)          # refuse to replace a pre-existing symlink at this name
+    project = client_project or _stored_client_project(token_path)
     fd, tmp_path = tempfile.mkstemp(dir=token_dir, prefix=".token-", suffix=".tmp")
     try:
         with os.fdopen(fd, "w") as f:
             _harden(tmp_path, fd)       # restrictive mode enforced before content is written
-            f.write(creds.to_json())
+            payload = json.loads(creds.to_json())
+            if project is not None:
+                payload["client_project"] = project
+            f.write(json.dumps(payload))
         os.replace(tmp_path, token_path)   # atomic swap; never a reader-visible partial write
     except BaseException:
         try:
@@ -599,6 +630,36 @@ def read_client_secrets(path: str) -> dict:
     return config
 
 
+def client_project_id(path: str | None) -> str | None:
+    """The Google Cloud `project_id` a client-secrets file belongs to, or `None`.
+
+    Returns `None` - never raises - when `path` is falsy, the file is absent, unreadable, or
+    not a valid OAuth client-secrets document. This is diagnostic information only, so a
+    failure to read it must never break a call that would otherwise work: every caller uses
+    this purely to LABEL a credential or a consent flow, not to gate one.
+
+    It is not a secret. The same `project_id` is disclosed on every OAuth consent screen (as
+    part of the app identity Google shows the user) and in the body of every 403 Google returns
+    when that project lacks an API a call needs. Do not "harden" this into raising or redacting
+    later on the theory that a project id looks sensitive - it is exactly as public as the
+    consent screen and the error message that already carry it, and hiding it here only removes
+    the one place this project shows which project a credential or a consent flow belongs to.
+    That silence is what let a real incident go unnoticed: a live probe defaulted to a
+    sibling server's OAuth client, consent succeeded against a real Google account, and the
+    first API call then failed 403 because that project had no Gmail API enabled - nothing in
+    the flow ever said which project was in use, even though the `client_id` presented right
+    there in the same file was opaque and the `project_id` sitting beside it was not.
+    """
+    if not path:
+        return None
+    try:
+        config = read_client_secrets(path)
+    except AuthError:
+        return None
+    project_id = (config.get("installed") or config.get("web") or {}).get("project_id")
+    return str(project_id) if project_id else None
+
+
 def load_credentials(client_secrets: str, token_path: str, required: list[str],
                      *, force: bool = False) -> Credentials:
     """Interactive: reuse the cache, else open a browser for consent. Terminal use only.
@@ -620,7 +681,12 @@ def load_credentials(client_secrets: str, token_path: str, required: list[str],
     else:
         config = read_client_secrets(client_secrets)    # we open it; see read_client_secrets (#449)
         creds = InstalledAppFlow.from_client_config(config, required).run_local_server(port=0)
-    _write_token(token_path, creds)
+    # `client_project_id` re-reads `client_secrets`, tolerating exactly the same absent/
+    # malformed cases `read_client_secrets` above would already have raised on - by this point
+    # that file was necessarily readable if the consent branch ran, and irrelevant if the
+    # refresh branch did, so recomputing it here rather than threading a value through is the
+    # simpler of the two and costs one extra, cheap, local file read.
+    _write_token(token_path, creds, client_project_id(client_secrets))
     return creds
 
 

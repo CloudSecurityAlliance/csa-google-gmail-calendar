@@ -4,6 +4,7 @@ tmp_path token file — no browser, no network. Patterned on the sibling project
 tests/test_auth.py + tests/test_auth_lifecycle.py (csa-google-workspace), adapted for a
 capability set instead of a read_only flag.
 """
+import json
 import os
 
 import pytest
@@ -590,3 +591,105 @@ def test_client_secrets_missing_installed_or_web_key_is_refused(tmp_path):
     bad.write_text('{"type": "service_account", "project_id": "x"}')
     with pytest.raises(AuthError, match="installed"):
         auth.read_client_secrets(str(bad))
+
+
+# --- client_project_id -----------------------------------------------------------------------
+
+def test_client_project_id_reads_the_installed_project_id(tmp_path):
+    p = tmp_path / "client_secret.json"
+    p.write_text('{"installed":{"client_id":"cid","project_id":"my-fake-project-123"}}')
+    assert auth.client_project_id(str(p)) == "my-fake-project-123"
+
+
+def test_client_project_id_reads_the_web_project_id(tmp_path):
+    p = tmp_path / "client_secret.json"
+    p.write_text('{"web":{"client_id":"cid","project_id":"other-fake-project-456"}}')
+    assert auth.client_project_id(str(p)) == "other-fake-project-456"
+
+
+def test_client_project_id_is_none_for_a_missing_file(tmp_path):
+    assert auth.client_project_id(str(tmp_path / "nope.json")) is None
+
+
+def test_client_project_id_is_none_for_malformed_json(tmp_path):
+    p = tmp_path / "client_secret.json"
+    p.write_text("{not json")
+    assert auth.client_project_id(str(p)) is None
+
+
+def test_client_project_id_is_none_for_a_service_account_key(tmp_path):
+    # No 'installed' or 'web' key - the same document `read_client_secrets` refuses.
+    p = tmp_path / "client_secret.json"
+    p.write_text('{"type": "service_account"}')
+    assert auth.client_project_id(str(p)) is None
+
+
+def test_client_project_id_is_none_when_the_client_has_no_project_id(tmp_path):
+    p = tmp_path / "client_secret.json"
+    p.write_text('{"installed":{"client_id":"cid"}}')
+    assert auth.client_project_id(str(p)) is None
+
+
+def test_client_project_id_is_none_for_a_falsy_path():
+    assert auth.client_project_id(None) is None
+    assert auth.client_project_id("") is None
+
+
+def test_client_project_id_never_raises_for_an_unreadable_directory(tmp_path):
+    # A directory where a file was expected - the same OSError-shaped edge `read_client_secrets`
+    # itself is not specifically tested against, but `client_project_id` must swallow regardless.
+    d = tmp_path / "a_directory_not_a_file.json"
+    d.mkdir()
+    assert auth.client_project_id(str(d)) is None
+
+
+# --- token.json records its own project (auth.py's `_write_token` / `_stored_client_project`) -
+
+def test_write_token_records_the_client_project_when_given_one(tmp_path):
+    token = tmp_path / "token.json"
+    auth._write_token(str(token), FakeCreds(valid=True), "my-fake-project-123")
+    written = json.loads(token.read_text())
+    assert written["client_project"] == "my-fake-project-123"
+
+
+def test_write_token_omits_client_project_when_none_is_known(tmp_path):
+    token = tmp_path / "token.json"
+    auth._write_token(str(token), FakeCreds(valid=True))
+    written = json.loads(token.read_text())
+    assert "client_project" not in written
+
+
+def test_write_token_preserves_a_previously_recorded_project_across_a_refresh_rewrite(tmp_path):
+    """`Credentials.to_json()` only serialises the fields the `Credentials` class itself knows
+    about, so a caller that rewrites a token without a project id in hand (the refresh path in
+    `load_cached_credentials`, which never reads the client-secrets file) must not silently
+    erase a project id an earlier write recorded."""
+    token = tmp_path / "token.json"
+    token.write_text('{"token": "old", "client_project": "my-fake-project-123"}')
+    auth._write_token(str(token), FakeCreds(valid=True))          # no client_project passed
+    written = json.loads(token.read_text())
+    assert written["client_project"] == "my-fake-project-123"
+
+
+def test_write_token_an_explicit_client_project_overrides_the_stored_one(tmp_path):
+    token = tmp_path / "token.json"
+    token.write_text('{"token": "old", "client_project": "stale-fake-project"}')
+    auth._write_token(str(token), FakeCreds(valid=True), "fresh-fake-project")
+    written = json.loads(token.read_text())
+    assert written["client_project"] == "fresh-fake-project"
+
+
+def test_load_credentials_records_the_client_project_on_first_consent(tmp_path, monkeypatch):
+    token = tmp_path / "token.json"
+    secrets = tmp_path / "client_secret.json"
+    secrets.write_text(
+        '{"installed":{"client_id":"cid","client_secret":"cs",'
+        '"auth_uri":"https://accounts.google.com/o/oauth2/auth",'
+        '"token_uri":"https://oauth2.googleapis.com/token",'
+        '"project_id":"my-fake-project-123"}}')
+    _patch_flow(monkeypatch, FakeCreds(valid=True))
+
+    auth.load_credentials(str(secrets), str(token), _required())
+
+    written = json.loads(token.read_text())
+    assert written["client_project"] == "my-fake-project-123"

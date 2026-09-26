@@ -71,12 +71,23 @@ def _revoke_best_effort(creds: Credentials) -> bool:
         return False
 
 
-def _auth_status_payload(token_path: str, required: list[str]) -> dict[str, Any]:
+def _auth_status_payload(token_path: str, required: list[str],
+                         client_secrets: str | None = None) -> dict[str, Any]:
     """No network call, ever - see `auth_status`'s own docstring for why that is the whole
     point of this function existing separately from `auth.load_cached_credentials`, which
-    refreshes an expired access token over the network as part of returning usable credentials."""
+    refreshes an expired access token over the network as part of returning usable credentials.
+
+    `client_secrets` is accepted as a parameter, not read from the environment in here, so this
+    function stays a pure function of its arguments and testable without monkeypatching process
+    state - the caller (`auth_status` below) is the one place that knows to thread `settings.
+    client_secrets` through. It feeds `client_project` (`auth.client_project_id`) in every
+    returned state: which Google Cloud project a credential would be (or is) issued against is
+    exactly the fact a real incident showed was missing everywhere in this flow - see
+    `client_project_id`'s own docstring for that incident."""
+    client_project = auth.client_project_id(client_secrets)
     if not os.path.exists(token_path):
         return {"status": "no_credential", "token_path": token_path,
+                "client_project": client_project,
                 "detail": f"No credential cached at {token_path}. Call `authenticate` to log in."}
     try:
         # `auth._read_cached`, not `auth.load_cached_credentials`: the public function refreshes
@@ -85,9 +96,11 @@ def _auth_status_payload(token_path: str, required: list[str]) -> dict[str, Any]
         creds = auth._read_cached(token_path, required, explain_missing_scopes=True)
     except auth.ScopesMissingError as e:
         return {"status": "scope_short", "token_path": token_path,
+                "client_project": client_project,
                 "missing_scopes": list(e.scopes), "detail": str(e)}
     except exc.AuthError as e:
         return {"status": "no_credential", "token_path": token_path,
+                "client_project": client_project,
                 "detail": f"The cached credential at {token_path} could not be read ({e}). "
                           f"Call `authenticate` to log in again."}
     detail = f"Credential cached at {token_path} with every required scope."
@@ -100,7 +113,8 @@ def _auth_status_payload(token_path: str, required: list[str]) -> dict[str, Any]
                   "call will fail; call `authenticate` again.")
     elif creds is not None and creds.expired:
         detail += " The access token has expired and will be refreshed automatically on next use."
-    return {"status": "ready", "token_path": token_path, "detail": detail}
+    return {"status": "ready", "token_path": token_path, "client_project": client_project,
+            "detail": detail}
 
 
 def register_auth_tools(app: MCPServer, settings: Settings) -> None:
@@ -165,7 +179,9 @@ def register_auth_tools(app: MCPServer, settings: Settings) -> None:
                         "detail": "No response from the browser within 5 minutes. Call "
                                   "authenticate again when ready."}
 
-            await anyio.to_thread.run_sync(lambda: finish(flow, redirect, settings.token_path))
+            client_project = auth.client_project_id(settings.client_secrets)
+            await anyio.to_thread.run_sync(
+                lambda: finish(flow, redirect, settings.token_path, client_project))
             await ctx.session.send_elicit_complete(elicitation_id)
             return {"status": "authorized",
                     "detail": f"Token cached at {settings.token_path}."}
@@ -185,8 +201,14 @@ def register_auth_tools(app: MCPServer, settings: Settings) -> None:
         "you are not logged in" about a credential that is sitting right there and working
         fine for everything it was issued for - the wrong thing to say when the actual gap is
         one scope.
+
+        Every state also carries `client_project`: the Google Cloud project this deployment's
+        configured client-secrets file belongs to, or `None` if none is configured or it could
+        not be read. Not a secret - see `auth.client_project_id`'s docstring - and the whole
+        reason it is here is to be the answer a consent flow never gave: which project a call
+        is about to run (or already ran) against.
         """
-        return _auth_status_payload(settings.token_path, required)
+        return _auth_status_payload(settings.token_path, required, settings.client_secrets)
 
     @tool(app, annotations=_LOGOUT)
     def logout() -> dict[str, Any]:

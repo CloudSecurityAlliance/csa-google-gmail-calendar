@@ -140,12 +140,27 @@ def test_consent_url_requests_offline_access_and_forces_the_consent_prompt():
 def test_finish_exchanges_the_redirect_and_writes_the_token(tmp_path, monkeypatch):
     flow = _FakeFlow()
     written = {}
-    monkeypatch.setattr(_auth_flow, "_write_token",
-                       lambda token_path, creds: written.setdefault("args", (token_path, creds)))
+    monkeypatch.setattr(
+        _auth_flow, "_write_token",
+        lambda token_path, creds, client_project=None:
+            written.setdefault("args", (token_path, creds, client_project)))
     token_path = str(tmp_path / "token.json")
     _auth_flow.finish(flow, "http://127.0.0.1:1/?state=abc&code=xyz", token_path)
     assert flow.fetch_token_calls == ["http://127.0.0.1:1/?state=abc&code=xyz"]
-    assert written["args"] == (token_path, flow.credentials)
+    assert written["args"] == (token_path, flow.credentials, None)
+
+
+def test_finish_passes_the_client_project_through_to_write_token(tmp_path, monkeypatch):
+    flow = _FakeFlow()
+    written = {}
+    monkeypatch.setattr(
+        _auth_flow, "_write_token",
+        lambda token_path, creds, client_project=None:
+            written.setdefault("args", (token_path, creds, client_project)))
+    token_path = str(tmp_path / "token.json")
+    _auth_flow.finish(flow, "http://127.0.0.1:1/?state=abc&code=xyz", token_path,
+                      client_project="my-fake-project-123")
+    assert written["args"] == (token_path, flow.credentials, "my-fake-project-123")
 
 
 def test_build_flow_requests_exactly_the_scopes_the_enabled_capabilities_need(

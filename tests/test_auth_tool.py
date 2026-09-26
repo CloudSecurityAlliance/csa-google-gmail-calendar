@@ -64,8 +64,9 @@ def _build_server_and_settings(tmp_path, monkeypatch, *, redirect: str | None = 
     monkeypatch.setattr(auth_tools, "build_flow", lambda secrets, enabled, redirect_uri: object())
     monkeypatch.setattr(auth_tools, "consent_url", lambda flow: "https://example.invalid/consent")
     finished = []
-    monkeypatch.setattr(auth_tools, "finish",
-                       lambda flow, redirect_uri, token_path: finished.append(redirect_uri))
+    monkeypatch.setattr(
+        auth_tools, "finish",
+        lambda flow, redirect_uri, token_path, client_project=None: finished.append(redirect_uri))
 
     secrets = tmp_path / "client_secret.json"
     secrets.write_text("{}")
@@ -205,6 +206,22 @@ def test_auth_status_reports_no_credential_for_an_unreadable_token_file(tmp_path
     out = auth_tools._auth_status_payload(str(token_path), [])
     assert out["status"] == "no_credential"
     assert "could not be read" in out["detail"]
+
+
+def test_auth_status_payload_client_project_defaults_to_none_without_client_secrets(tmp_path):
+    """`_auth_status_payload` takes `client_secrets` as an optional third argument, not the
+    environment - a caller (like the tests above) that omits it entirely still gets a
+    `client_project` key, just `None`."""
+    out = auth_tools._auth_status_payload(str(tmp_path / "no-token-here.json"), [])
+    assert out["client_project"] is None
+
+
+def test_auth_status_payload_reads_the_client_project_from_the_given_client_secrets(tmp_path):
+    secrets = tmp_path / "client_secret.json"
+    secrets.write_text('{"installed":{"client_id":"cid","project_id":"my-fake-project-123"}}')
+    out = auth_tools._auth_status_payload(str(tmp_path / "no-token-here.json"), [], str(secrets))
+    assert out["status"] == "no_credential"
+    assert out["client_project"] == "my-fake-project-123"
 
 
 def test_auth_status_reports_ready_with_no_refresh_available_when_expired_with_none(tmp_path):

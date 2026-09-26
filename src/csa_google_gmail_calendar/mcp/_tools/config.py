@@ -46,6 +46,17 @@ tool's bar is stricter on purpose, because its output is the one a model is most
 quote back into a plan, or an operator to paste whole into a support ticket or a public issue -
 see `report_a_problem`'s own docstring for the same discipline applied to a report instead of a
 snapshot.
+
+`client_project` sits under that same bar, not beside it, the way `token_path` sits under
+`auth_status`'s: it is reported because a Google Cloud project id is not a credential either -
+it is disclosed on every OAuth consent screen and in the body of every 403 a misconfigured
+project returns, so withholding it here would hide nothing a model or an operator could not
+already see elsewhere. It earns its place for the same reason `granted_scopes` does: a real
+incident ran an entire consent flow and every subsequent API call against a sibling server's
+OAuth client and its unrelated Google Cloud project, and nothing in that flow ever said which
+project was in use. `client_project` is that answer, read from whichever client-secrets file
+this deployment is configured to use (see `auth.client_project_id`) - `None` when none is
+configured or it cannot be read.
 """
 from __future__ import annotations
 
@@ -106,8 +117,11 @@ def register_config_tools(app: MCPServer, settings: Settings, flavour: str,
         acts on; this field is a scope-level summary, not a replacement for that tool.
 
         Never returns a token path, token contents, or a client-secrets path - only scope
-        identifiers (not secrets) and the attachment/download directories' configured PATHs,
-        which a refusal from `send_message`/`get_attachment` would disclose anyway."""
+        identifiers (not secrets), the attachment/download directories' configured PATHs (which
+        a refusal from `send_message`/`get_attachment` would disclose anyway), and
+        `client_project` - the Google Cloud project id the configured client-secrets file
+        belongs to, itself no more secret than the consent screen and the 403s that already
+        carry it (see the module docstring's "What this deliberately never says")."""
         policy = settings.policy
         registered = frozenset(t.name for t in app._tool_manager.list_tools())
         cap_allowed = frozenset(name for name, cap in TOOL_CAPABILITIES.items()
@@ -122,6 +136,7 @@ def register_config_tools(app: MCPServer, settings: Settings, flavour: str,
         download_directory = (str(download_policy.root)
                               if download_policy is not None and download_policy.root is not None
                               else None)
+        client_project = auth.client_project_id(settings.client_secrets)
         return {
             "flavour": flavour,
             "flavour_note": (
@@ -137,6 +152,7 @@ def register_config_tools(app: MCPServer, settings: Settings, flavour: str,
             "required_scopes": required,
             "granted_scopes": granted,
             "scopes_sufficient": scopes_sufficient,
+            "client_project": client_project,
             "attachment_directory": attachment_directory,
             "download_directory": download_directory,
             "registered_tools": sorted(registered),

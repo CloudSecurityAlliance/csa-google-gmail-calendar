@@ -102,6 +102,38 @@ def test_login_does_not_warn_when_client_ids_match(tmp_path, monkeypatch, capsys
     assert "different OAuth client" not in capsys.readouterr().err
 
 
+def test_login_prints_the_project_before_opening_the_browser(tmp_path, monkeypatch):
+    secrets = tmp_path / "client_secret.json"
+    secrets.write_text(json.dumps({"installed": {"client_id": "abc",
+                                                 "project_id": "my-fake-project-123"}}))
+    monkeypatch.setattr(auth, "load_cached_credentials",
+                       lambda token_path, required: (_ for _ in ()).throw(AuthError("gone")))
+    monkeypatch.setattr(auth, "load_credentials",
+                       lambda client_secrets, token_path, required, force=False: None)
+    out = io.StringIO()
+    rc = _login.login(_settings(str(tmp_path / "token.json")),
+                      {"CSA_GGC_CLIENT_SECRETS": str(secrets)}, out=out)
+    assert rc == 0
+    printed = out.getvalue()
+    assert "my-fake-project-123" in printed
+    # Named before the "Opening a browser" line completes, and again on success.
+    assert printed.index("my-fake-project-123") < printed.index("Authorized")
+
+
+def test_login_prints_unknown_when_the_project_id_cannot_be_read(tmp_path, monkeypatch):
+    secrets = tmp_path / "client_secret.json"
+    secrets.write_text(json.dumps({"installed": {"client_id": "abc"}}))  # no project_id
+    monkeypatch.setattr(auth, "load_cached_credentials",
+                       lambda token_path, required: (_ for _ in ()).throw(AuthError("gone")))
+    monkeypatch.setattr(auth, "load_credentials",
+                       lambda client_secrets, token_path, required, force=False: None)
+    out = io.StringIO()
+    rc = _login.login(_settings(str(tmp_path / "token.json")),
+                      {"CSA_GGC_CLIENT_SECRETS": str(secrets)}, out=out)
+    assert rc == 0
+    assert "unknown" in out.getvalue()
+
+
 def test_login_falls_through_to_consent_when_nothing_usable_is_cached(tmp_path, monkeypatch):
     secrets = tmp_path / "client_secret.json"
     secrets.write_text(json.dumps({"installed": {"client_id": "abc"}}))
