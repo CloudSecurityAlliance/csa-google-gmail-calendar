@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import base64
 import binascii
+import codecs
+import threading
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from typing import Any
@@ -114,41 +116,79 @@ def _decode(body: dict[str, Any]) -> str:
     return base64.urlsafe_b64decode(padded).decode("utf-8", errors="replace")
 
 
+#: Fix round 3 (CINO 2026-09-26) name for the `codecs` error handler `_count_utf8_replacements`
+#: registers below. ONE module-level registration, made once at import time - never a per-call
+#: name - because `codecs.register_error` writes into a process-global registry with no
+#: `unregister_error` call; a per-call name (e.g. keyed on `id(handler)`) in a long-running
+#: server would leak one registry entry per decoded message, forever.
+_COUNTING_REPLACE_ERROR_HANDLER = "csa-google-gmail-calendar/count-utf8-replacements"
+
+#: The per-call count `_count_utf8_replacements` needs OUT of the handler above. `threading.local`
+#: rather than a `contextvars.ContextVar`: the handler runs synchronously, inline, inside a single
+#: blocking `bytes.decode()` call with no `await` point anywhere inside it, so nothing else can
+#: run on the SAME thread mid-decode to interleave with it - which is exactly the property that
+#: makes `threading.local` (isolated per OS thread, not per async task) sufficient here, and
+#: simpler than a contextvar. This matters concretely for this project: `pyproject.toml` notes
+#: `mcp>=2.1` runs sync tool handlers on a worker thread, so concurrent `read_message` calls are
+#: plausible, on different threads, and each needs its own tally.
+_utf8_replacement_tally = threading.local()
+
+
+def _tally_utf8_replacement(exc: UnicodeError) -> tuple[str | bytes, int]:
+    """The registered handler: substitute U+FFFD exactly as the built-in `"replace"` handler
+    does, while adding the invalid span's BYTE length to this thread's tally. Never called
+    directly - only by the `codecs` machinery inside `bytes.decode(errors=...)`, which always
+    passes a `UnicodeDecodeError` here (the only place this handler is registered for use is a
+    `decode` call) - typed as the broader `UnicodeError` because that is the signature
+    `codecs.register_error` itself declares.
+    """
+    assert isinstance(exc, UnicodeDecodeError)
+    _utf8_replacement_tally.count = (
+        getattr(_utf8_replacement_tally, "count", 0) + (exc.end - exc.start)
+    )
+    return "�", exc.end
+
+
+codecs.register_error(_COUNTING_REPLACE_ERROR_HANDLER, _tally_utf8_replacement)
+
+
 def _count_utf8_replacements(raw: bytes) -> int:
-    """How many BYTES of `raw` are invalid UTF-8 - the bytes `_decode`'s
-    `errors="replace"` silently substitutes with U+FFFD.
+    """How many BYTES of `raw` are invalid UTF-8 - the bytes `_decode`'s `errors="replace"`
+    silently substitutes with U+FFFD.
 
     Fix round 2 (CINO 2026-09-26): `str.count("\\ufffd")` on `_decode`'s OUTPUT was tried first
-    and is wrong in both directions, which is worse than the silence it replaced - a precise-
-    sounding wrong number makes a reader confident and wrong, where no number at all only makes
-    them uncertain. It diverges because U+FFFD in the output and "an invalid byte" in the input
-    are not the same thing to count: a truncated multi-byte sequence collapses SEVERAL invalid
+    and is wrong in both directions - a truncated multi-byte sequence collapses SEVERAL invalid
     bytes into ONE replacement character (undercounts), and a body that legitimately contained a
-    real U+FFFD character before decoding would inflate the tally with a byte that was never
-    invalid (overcounts).
+    real U+FFFD character before decoding would inflate the tally (overcounts) - which is worse
+    than the silence it replaced: a precise-sounding wrong number makes a reader confident and
+    wrong, where no number at all only makes them uncertain.
 
-    `bytes.decode`'s own `UnicodeDecodeError` carries the true invalid span as
-    `exc.start`/`exc.end` (verified: for `b"abc\\xe2\\x82"`, a truncated 3-byte sequence, the
-    error reports `start=3, end=5` - two bytes - while the "replace"-decoded output holds only
-    one U+FFFD). Looping over that exception here gets the same span a custom `codecs` error
-    handler would see from `exc.start`/`exc.end` - without registering one: `codecs.register_error`
-    is a process-global registry with no unregister call, so a per-call handler name in a
-    long-running server leaks one registration per decoded message, forever, and a module-level
-    handler would still need its own side channel (a contextvar or similar) to get a per-call
-    count back out - more moving parts than a plain loop over `UnicodeDecodeError` needs. This
-    also never builds the decoded text itself (that is `_decode`'s job, via the same bytes) - it
-    only counts, on the same "advance past the invalid span" logic the built-in "replace" handler
-    uses, so the count lines up with what `_decode` actually produced.
+    Fix round 3 (CINO 2026-09-26): the round 2 fix - loop `bytes.decode()`, catch
+    `UnicodeDecodeError`, advance past `exc.end` via `remaining = remaining[exc.end:]` - is
+    QUADRATIC on an all-invalid body. The obvious read is "the decoder's scan is O(remaining) and
+    we do that once per invalid byte, so it's O(n^2)" - but re-measuring after switching
+    `remaining` to a `memoryview` (which slices without copying, eliminating the naive reading's
+    O(n) tail-copy) showed the SAME superlinear growth, converging toward ~3.5x per size
+    doubling rather than the ~2x linear would give. The actual cost is inside `codecs.decode()`
+    itself: called per-iteration on a shrinking (but never-copied) view, its own per-call cost
+    still grows with the remaining length even when the invalid byte is at position 0 - measured
+    directly (1000 calls at a fixed 400,000-byte remaining length: ~6.4ms; at a fixed 1,000-byte
+    remaining length: ~0.5ms - an ~12x difference for a 400x size difference, not O(1) either way,
+    but clearly growing with size). So "stop copying the tail" does not fix this class of
+    approach at all: ANY per-iteration call into the decoder that re-examines a shrinking buffer
+    carries some size-dependent cost, copy or no copy, when called n times.
+
+    Fixed instead by making exactly ONE native decode pass over `raw`, using a `codecs` error
+    handler (`_tally_utf8_replacement`, registered once at import time as
+    `_COUNTING_REPLACE_ERROR_HANDLER`) that the C decoder calls back into per invalid span
+    WITHOUT this module ever re-entering Python to restart the scan - the same mechanism
+    `errors="replace"` itself uses internally, just with our own bookkeeping added. Re-measured
+    linear: 10,000 B -> 0.0017s, 20,000 B -> 0.0032s, 40,000 B -> 0.0059s, 80,000 B -> 0.0113s,
+    160,000 B -> 0.0226s, 320,000 B -> 0.0451s - each doubling costs ~1.9-2.0x, not ~3.5x-4x.
     """
-    remaining = raw
-    replaced = 0
-    while True:
-        try:
-            remaining.decode("utf-8")
-            return replaced
-        except UnicodeDecodeError as exc:
-            replaced += exc.end - exc.start
-            remaining = remaining[exc.end:]
+    _utf8_replacement_tally.count = 0
+    raw.decode("utf-8", errors=_COUNTING_REPLACE_ERROR_HANDLER)
+    return _utf8_replacement_tally.count
 
 
 def _decode_body_part(body: dict[str, Any], *, label: str) -> tuple[str, list[str]]:

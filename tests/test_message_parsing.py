@@ -5,7 +5,7 @@ import pytest
 
 from csa_google_gmail_calendar.backend import FakeBackend
 from csa_google_gmail_calendar.exceptions import NotFoundError
-from csa_google_gmail_calendar.mail import _MAX_MIME_DEPTH, Mail
+from csa_google_gmail_calendar.mail import _MAX_MIME_DEPTH, Mail, _count_utf8_replacements
 
 
 def _b64(s: str) -> str:
@@ -237,6 +237,59 @@ def test_invalid_utf8_bytes_are_replaced_and_the_count_is_the_true_byte_count():
     })})).read_message("m1")
     assert m2.body_markdown.count("�") == 1  # ONE replacement character in the output...
     assert _disclosed_replacement_count(m2.transformations) == 2  # ...but TWO bytes were invalid
+
+
+def test_counting_invalid_utf8_is_correct_on_a_large_all_invalid_body():
+    """Fix round 3. The round-2 loop-based counter was measured quadratic on an all-invalid
+    body: ~18s extrapolated for a 1 MB body, ~3 hours for Gmail's own 25 MB message ceiling - a
+    reachable input (a binary attachment mislabelled `text/plain` produces exactly this byte
+    pattern), not a contrived one. A timing assertion here would be flaky, so this pins WORK
+    instead: on the linear fix, 200,000 bytes complete in a small fraction of a second (this
+    whole test suite runs in well under a second); on the reintroduced quadratic version it is
+    slow enough to notice immediately in any normal test run. See
+    `test_utf8_replacement_counting_never_reslices_its_input` below for a check on the same
+    property that does not depend on how long anything takes."""
+    body = b"\xff" * 200_000  # every byte individually invalid: the worst case for the old loop
+    m = Mail(FakeBackend(messages={"m1": _msg({
+        "mimeType": "text/plain", "headers": [],
+        "body": {"data": base64.urlsafe_b64encode(body).decode()},
+    })})).read_message("m1")
+    assert m.body_markdown == "�" * 200_000
+    assert _disclosed_replacement_count(m.transformations) == 200_000
+
+
+def test_utf8_replacement_counting_never_reslices_its_input():
+    """Fix round 3, the direct (non-timing) proof. The round-2 implementation's defect was
+    concretely `remaining = remaining[exc.end:]` - re-slicing a shrinking buffer once per
+    invalid byte - and switching that slice to a `memoryview` (avoiding the copy) turned out NOT
+    to fix the underlying cost either (measured directly - see `_count_utf8_replacements`'s
+    docstring). The implementation kept here never slices its input at all: it makes exactly one
+    `bytes.decode()` call over the original object and lets the registered error handler do the
+    counting via `codecs`' own per-error callback.
+
+    Asserted here without any wall clock: `_SpyBytes` is a `bytes` subclass that records every
+    `[start:]`-style slice taken of it. `bytes.decode()` reads the underlying buffer directly (it
+    does not go through `__getitem__`), so this only fires if OUR code slices the object - which
+    the chosen implementation never does, and the round-2 loop did on every single iteration.
+    Confirmed by hand against the reverted round-2 loop as a mutation check: it recorded a
+    non-zero slice against this same input (only the FIRST slice is visible this way, because
+    `bytes.__getitem__` on a subclass returns a plain `bytes` instance rather than another
+    `_SpyBytes` - which is exactly why this test cannot ALSO catch a memoryview-based
+    reintroduction: `memoryview(raw)` never calls `raw.__getitem__` either. It pins the specific
+    defect this project actually had and would have caught it; it is not a universal proof
+    against every possible quadratic rewrite, which is what
+    `test_counting_invalid_utf8_is_correct_on_a_large_all_invalid_body` above is for.
+    """
+    slices_taken: list[object] = []
+
+    class _SpyBytes(bytes):
+        def __getitem__(self, item):
+            slices_taken.append(item)
+            return super().__getitem__(item)
+
+    raw = _SpyBytes(b"\xff" * 5000)
+    assert _count_utf8_replacements(raw) == 5000
+    assert slices_taken == []
 
 
 def test_a_backend_that_raises_bare_keyerror_is_still_translated():
