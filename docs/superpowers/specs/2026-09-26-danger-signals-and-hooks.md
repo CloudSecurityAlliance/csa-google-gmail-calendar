@@ -145,6 +145,76 @@ determined is not a young domain and is not an old one. Say which check did not 
 Every finding carries **what would resolve it**: "this address has not appeared in this thread
 before — confirm the change by a channel that is not this email" is worth more than a score.
 
+## 4b. The mailbox is the intelligence source, and the AI is what makes using it affordable
+
+Tier M above says "correspondence history" as if it were one signal. It is not: it is a corpus,
+and it is the only corpus that knows what *normal* looks like **for this mailbox**. Three uses,
+increasingly interesting.
+
+**Have we ever spoken?** — the address, and separately the domain. Not a boolean: *when did we
+last*, and *how often*. A domain last heard from three years ago replying to a thread from last
+week is a different fact from a domain we email weekly.
+
+**Have we discussed this before?** — search the mailbox for related threads. This catches a shape
+nothing else does: a message that presents as the *continuation of a conversation that never
+happened*. It is also straightforwardly useful outside security, which matters, because a check
+that earns its keep only during an attack gets disabled.
+
+**Does this sound like them?** — compare against how this correspondent actually writes. This is
+the one that reaches the case where **everything else passes**: a real compromised account, real
+domain, real authentication, real thread, real history. The only thing that changed is the person
+at the keyboard.
+
+### The economics, which is the actual design constraint
+
+Researching every inbound message is not a good use of a person's time. It is a fine use of a
+model's — but "a model can do it" is not the same as "do it every time", and the difference is
+where this becomes buildable or doesn't.
+
+Three properties make it affordable:
+
+**Cheap signals gate expensive ones.** Tier L costs nothing and runs always. Tiers M, D and X run
+when L or T noticed something, or on an explicit ask. A cascade, not a battery. The point of the
+free tier is not that it catches everything — it is that it decides what deserves a closer look.
+
+**The expensive part is the baseline, not the comparison.** Building a correspondent profile —
+how they write, what you discuss, when they email, from where — is a one-off cost that amortises
+over every later message from them. Checking a new message against an existing profile is cheap.
+So the cost model is per *correspondent*, not per *message*, and it falls over time.
+
+**It does not have to be synchronous.** A profile can be built the first time you reply to
+someone, refreshed occasionally, and simply be absent otherwise — in which case the finding is
+`unavailable`, which the vocabulary above already requires be distinguishable from "nothing
+wrong".
+
+### The division of labour: the server surfaces evidence, the model judges
+
+Tone comparison invites building a classifier. **Do not build a classifier.** This server already
+feeds message bodies to a model; the model is the analyser, and the server's job is to put the
+right evidence in front of it:
+
+> *"This is the first message from this address. The domain has appeared 4 times, last 14 months
+> ago. Here are the 3 most recent messages from this domain, for comparison."*
+
+That is a tool returning facts, and the judgement — *does this sound like the same person?* —
+happens where judgement already happens. It keeps the server free of an NLP stack it would then
+own, it keeps the reasoning inspectable in the transcript, and it degrades honestly: with no
+history, the tool says so rather than guessing.
+
+### Tone is a weak signal, and must stay one
+
+People write differently when rushed, from a phone, when angry, in a second language, or about an
+unfamiliar topic. A tone mismatch is *routine*. It becomes meaningful only beside something else —
+a new device, a dormant thread resurrected, a payment detail changing — and it is exactly the sort
+of signal that tempts a score. It must not get one.
+
+### What this costs, and what it discloses
+
+Tier M as described reads **the mailbox at large**, not the thread in front of you. That is a
+materially larger capability than anything else here, and it deserves saying plainly rather than
+arriving as a side effect of a useful feature. It stays off by default, it says what it read, and
+a profile is derived data the person should be able to see and discard.
+
 ## 5. Build order
 
 1. **Header capture.** `ParsedMessage` today carries `sender`, `to`, `cc`, `subject` and no
@@ -152,7 +222,10 @@ before — confirm the change by a channel that is not this email" is worth more
    Tier L is unreachable until it does. This is the prerequisite, and it is cheap.
 2. **Tier L**, on `get_message`. Establishes the `Finding` vocabulary everything else reports into.
 3. **Tier T**, on `get_thread` **and `reply_all`** — the incident, and the hook that matters.
-4. **Tier M**, once there is a reason to read history.
+4. **Tier M** (§4b) — the corpus checks. Order inside it: *have we spoken* (cheap, a header
+   index), then *have we discussed this* (search, which already exists), then *does this sound
+   like them* (needs a profile and a model, and is the one that reaches a compromised real
+   account).
 5. **Tiers D and X**, behind their own capabilities, with the resolver as one hook.
 
 Tier L first is deliberate even though Tier T is more valuable: T needs the vocabulary L defines,
