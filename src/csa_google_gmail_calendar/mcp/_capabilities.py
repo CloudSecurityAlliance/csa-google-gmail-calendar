@@ -71,6 +71,18 @@ TOOL_CAPABILITIES: dict[str, str | None] = {
     "reply": "mail.send",
     "reply_all": "mail.send",
     "forward": "mail.send",
+    # --- Calendar reads (task 12, `_tools/calendar_read.py`) - policy.CALENDAR_READ ---
+    "list_calendars": "calendar.read",
+    "list_events": "calendar.read",
+    "get_event": "calendar.read",
+    "find_free_time": "calendar.read",  # calls Backend.query_freebusy, gated CALENDAR_READ
+    # --- Calendar writes (task 12, `_tools/calendar_write.py`) - policy.CALENDAR_WRITE ---
+    "create_event": "calendar.write",
+    "update_event": "calendar.write",     # a reschedule - see Calendar.reschedule
+    "respond_to_event": "calendar.write",
+    # --- Calendar delete (task 12, `_tools/calendar_write.py`) - policy.CALENDAR_DELETE,
+    # OFF by default (see policy.DEFAULT_ENABLED) ---
+    "delete_event": "calendar.delete",
 }
 
 

@@ -62,6 +62,16 @@ _TOOL_TO_GATED_METHOD: dict[str, str] = {
     "reply": "reply_message",
     "reply_all": "reply_all_message",
     "forward": "forward_message",
+    # --- Calendar reads (task 12) ---
+    "list_calendars": "list_calendars",
+    "list_events": "list_events",
+    "get_event": "get_event",
+    "find_free_time": "query_freebusy",
+    # --- Calendar writes (task 12) ---
+    "create_event": "create_event",
+    "update_event": "update_event",
+    "respond_to_event": "respond_to_event",
+    "delete_event": "delete_event",
 }
 
 
@@ -70,8 +80,15 @@ def _tool_names(server) -> set[str]:
 
 
 def test_every_registered_tool_is_declared():
-    """Fail-closed. A tool that arrives undeclared silently widens what the server claims."""
-    server = create_server(backend=None, policy=policy.Policy())
+    """Fail-closed. A tool that arrives undeclared silently widens what the server claims.
+
+    Built with EVERY capability enabled (`policy.ALL_CAPABILITIES`), not the default policy -
+    task 12 adds `delete_event`, gated `calendar.delete`, which is OFF by default
+    (`policy.DEFAULT_ENABLED`). This pair of tests is about the full universe of tools this
+    SERVER CAN EVER REGISTER against the full universe of what `TOOL_CAPABILITIES` declares,
+    not about what one particular deployment's policy happens to expose right now - the same
+    reasoning `reachable_capabilities()` already uses, below."""
+    server = create_server(backend=None, policy=policy.Policy(frozenset(policy.ALL_CAPABILITIES)))
     undeclared = _tool_names(server) - set(TOOL_CAPABILITIES)
     assert not undeclared, f"undeclared tools: {sorted(undeclared)}"
 
@@ -79,8 +96,9 @@ def test_every_registered_tool_is_declared():
 def test_every_declaration_corresponds_to_a_real_tool():
     """The reverse. A declaration with no tool tells a model a capability is reachable when it
     is not - the bug csa-google-workspace found by having a model read `describe_configuration`
-    and plan work on the strength of it."""
-    server = create_server(backend=None, policy=policy.Policy())
+    and plan work on the strength of it. See `test_every_registered_tool_is_declared` on why
+    this is built with every capability enabled rather than the default policy."""
+    server = create_server(backend=None, policy=policy.Policy(frozenset(policy.ALL_CAPABILITIES)))
     phantom = set(TOOL_CAPABILITIES) - _tool_names(server)
     assert not phantom, f"declared but not registered: {sorted(phantom)}"
 
