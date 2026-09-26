@@ -135,3 +135,63 @@ def test_policy_backend_inner_is_reachable_and_unpoliced():
     result = pb._inner.send_message(to=["a@example.com"], subject="x", body="y")
     assert result == {"sent": True}
     assert calls == [{"to": ["a@example.com"], "subject": "x", "body": "y"}]
+
+
+# --- Fix round 3, item 3: reads are gated by capability, not unconditionally allowed ---------
+#
+# This is the riskiest edit in fix round 2 (gating every read behind MAIL_READ/CALENDAR_READ
+# instead of `Gate(None)`), and it shipped with no test asserting the new refusal - only an
+# argument that nothing EXISTING broke, which is not the same claim. These four close that gap:
+# one refusal each for mail and calendar, and - just as important - the two assertions that the
+# default posture is UNCHANGED, since those are what would catch someone over-tightening later.
+
+def test_a_mail_read_is_refused_when_mail_read_is_not_enabled():
+    p = policy.Policy(frozenset({policy.MAIL_SEND}))
+    with pytest.raises(PolicyError, match="mail.read"):
+        p.require("get_message")
+
+
+def test_a_calendar_read_is_refused_when_calendar_read_is_not_enabled():
+    p = policy.Policy(frozenset({policy.MAIL_READ}))
+    with pytest.raises(PolicyError, match="calendar.read"):
+        p.require("get_event")
+
+
+def test_policy_backend_refuses_a_read_before_delegating_when_its_capability_is_narrowed_away():
+    calls = []
+
+    class Spy:
+        def search_messages(self, **kw):
+            calls.append(kw)
+            return {"messages": []}
+
+    pb = policy.PolicyBackend(Spy(), policy.Policy(frozenset({policy.MAIL_SEND})))
+    with pytest.raises(PolicyError):
+        pb.search_messages(query="x")
+    assert calls == [], "the gate must fire before the call, not after"
+
+
+def test_default_posture_still_permits_every_read():
+    """The assertion that would catch someone over-tightening _GATES later, not just the one
+    that catches the narrowing this fix round added: every method gated MAIL_READ or
+    CALENDAR_READ must still be allowed under DEFAULT_ENABLED, since both capabilities ship on."""
+    p = policy.Policy()  # DEFAULT_ENABLED
+    read_methods = [m for m, gate in policy._GATES.items()
+                    if gate.capability in (policy.MAIL_READ, policy.CALENDAR_READ)]
+    assert read_methods, "sanity: there should be read methods to check"
+    for method in read_methods:
+        assert p.allows(method), f"{method} should be allowed under the default posture"
+
+
+def test_default_posture_permits_a_read_through_policy_backend():
+    calls = []
+
+    class Spy:
+        def get_message(self, **kw):
+            calls.append(kw)
+            return {"id": "m1"}
+
+    pb = policy.PolicyBackend(Spy(), policy.Policy())  # DEFAULT_ENABLED
+    result = pb.get_message(message_id="m1")
+    assert result == {"id": "m1"}
+    assert calls == [{"message_id": "m1"}]

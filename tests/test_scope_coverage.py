@@ -124,8 +124,6 @@ def test_every_gated_method_can_be_authorised_by_its_capability():
     failures = []
     for method, gate in policy._GATES.items():
         capability = gate.capability
-        if capability is None:
-            continue  # nothing currently uses Gate(None); see policy.py's fix-round-2 note
         discovery_key = _METHOD_TO_DISCOVERY[method]
         method_scopes = accepted.get(discovery_key)
         assert method_scopes is not None, f"{method} -> {discovery_key} not in {INVENTORY.name}"
@@ -146,3 +144,47 @@ def test_send_draft_is_specifically_covered_by_the_derived_check():
     assert "https://www.googleapis.com/auth/gmail.send" not in method_scopes
     requested = set(auth._CAPABILITY_SCOPES[policy.MAIL_SEND])
     assert method_scopes & requested, "send_draft must be authorisable by MAIL_SEND's scopes"
+
+
+# A capability declared in `_CAPABILITY_SCOPES` but gating no `Backend` method at all - not an
+# oversight, but `policy.py`'s own documented, temporary state: MAIL_DELETE is reserved for the
+# three permanent-destroy Gmail methods (messages.delete, messages.batchDelete, threads.delete),
+# none of which any Backend method implements yet (see `test_mail_delete_gates_nothing_yet` in
+# tests/test_policy.py, and the comment on the MAIL_DELETE constant itself). The test below
+# fails loudly for any OTHER capability found in this state, since that would be a real gap
+# rather than a documented one.
+_CAPABILITIES_WITH_NO_GATED_METHOD_YET = frozenset({policy.MAIL_DELETE})
+
+
+def test_every_requested_scope_is_needed_by_some_gated_method():
+    """Fix round 3, item 2 (Important) - the REVERSE of the test above, and the direction
+    spec §4 actually names: both official Google servers were criticised for advertising
+    scopes their tools cannot exercise, i.e. requesting a scope no gated method under a
+    capability ever accepts. Under-declaration (the test above) is loud - a 403 someone
+    reports. Over-declaration is silent - a consent screen nobody questions - which is why
+    this direction needs its own test rather than being assumed covered by the first one.
+
+    For every capability, for every scope it requests, at least one method THAT CAPABILITY
+    GATES must accept that scope. A scope satisfied only by a method some OTHER capability
+    gates would not count - that would be exactly the over-declaration this test exists to
+    catch, dressed up as coverage.
+    """
+    accepted = _load_accepted_scopes()
+    failures = []
+    for capability, requested in auth._CAPABILITY_SCOPES.items():
+        gated_methods = [m for m, gate in policy._GATES.items() if gate.capability == capability]
+        if not gated_methods:
+            assert capability in _CAPABILITIES_WITH_NO_GATED_METHOD_YET, (
+                f"{capability!r} requests scopes but gates no Backend method at all - this is "
+                f"either a newly-added capability that needs wiring up, or an oversight; either "
+                f"way it is not one of the documented exceptions "
+                f"({sorted(_CAPABILITIES_WITH_NO_GATED_METHOD_YET)}), so report it rather than "
+                f"silently allowing it")
+            continue
+        method_scope_sets = [accepted[_METHOD_TO_DISCOVERY[m]] for m in gated_methods]
+        for scope in requested:
+            if not any(scope in s for s in method_scope_sets):
+                failures.append(
+                    f"{capability!r} requests {scope!r}, but none of the methods it gates "
+                    f"({sorted(gated_methods)}) accept it")
+    assert not failures, "over-declared scope(s):\n" + "\n".join(failures)

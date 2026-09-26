@@ -23,7 +23,25 @@ from .exceptions import PolicyError
 
 MAIL_READ = "mail.read"
 MAIL_WRITE = "mail.write"        # draft CRUD, label application, trash/untrash, spam
-MAIL_SEND = "mail.send"          # outbound - Google gives it its own scope
+# outbound - Google gives it its own scope (gmail.send). Fix round 3 (auth.py task-9-report.md):
+# enabling MAIL_SEND ALSO grants `gmail.compose` at the OAuth level, added there so `send_draft`
+# (`drafts.send`, which does not accept `gmail.send` at all) can be authorised. `gmail.compose`
+# is not a narrow "send-only" scope: Google's own Discovery data shows it also accepts
+# `users.drafts.delete` - "Immediately and permanently deletes the specified draft. Does not
+# simply trash it." So a token issued for MAIL_SEND alone can call permanent draft deletion,
+# same as ADR-001's `delete_email` naming less than it does, but arriving from the SCOPE side
+# rather than the tool-name side.
+#
+# This server's own `delete_draft` tool IS gated `MAIL_WRITE`, not `MAIL_SEND` (see `_GATES`
+# below), so nothing THIS server exposes lets a MAIL_SEND-only deployment delete a draft through
+# its own tool surface. That is a CALL-PATH control (`PolicyBackend` refuses before delegating),
+# not a SCOPE restriction - and `PolicyBackend` is a documented seam, not a sandbox (see its own
+# docstring): the bearer token itself, used by another client sharing the same cached token, or
+# by anything that reaches the Google API past this server's policy layer, can call
+# `drafts.delete` under MAIL_SEND's grant with no further consent. Enabling MAIL_SEND is
+# therefore consenting to more than "this server may send mail" at the OAuth level, even though
+# every tool this server ships keeps that authority behind MAIL_WRITE.
+MAIL_SEND = "mail.send"
 # The 3 permanent-destroy Gmail methods whose ONLY scope is bare `https://mail.google.com/`:
 # messages.delete, messages.batchDelete, threads.delete. Trash is not among them - trashing
 # needs only gmail.modify, which is why it lives in MAIL_WRITE instead. No Backend method in
@@ -50,12 +68,17 @@ IRREVERSIBLE: frozenset[str] = frozenset({MAIL_SEND, MAIL_DELETE, CALENDAR_DELET
 
 
 class Gate:
-    """What a Backend method costs. `capability=None` names a method this project has decided
-    needs no capability check at all (nothing currently uses it - see the fix-round-2 note on
-    `_GATES` below for why every read is gated by name instead)."""
+    """What a Backend method costs: the single capability that must be enabled to call it.
+
+    Fix round 3: this used to also accept `capability=None`, meaning "no capability check at
+    all", for what `_GATES` (below) called reads. Nothing constructs a `Gate(None)` any more -
+    every read is gated by its own read capability instead (see the fix-round-2 note on
+    `_GATES`) - so the `None` branches this class's `capability` attribute fed into `allows`/
+    `require` were pruned rather than kept as an untested, unreachable path on a security seam.
+    """
     __slots__ = ("capability",)
 
-    def __init__(self, capability: str | None) -> None:
+    def __init__(self, capability: str) -> None:
         self.capability = capability
 
 
@@ -128,7 +151,7 @@ class Policy:
         gate = _GATES.get(method)
         if gate is None:
             return False          # fail closed: an ungated method is one nobody decided about
-        return gate.capability is None or gate.capability in self.enabled
+        return gate.capability in self.enabled
 
     def require(self, method: str) -> None:
         gate = _GATES.get(method)
@@ -136,7 +159,7 @@ class Policy:
             raise PolicyError(
                 f"{method!r} has no gate, so this server will not call it. This is a bug: "
                 f"every Backend method must be declared in policy._GATES.")
-        if gate.capability is None or gate.capability in self.enabled:
+        if gate.capability in self.enabled:
             return
         capability = gate.capability
         # Two different reasons a capability can be refused, and they must not share wording:
