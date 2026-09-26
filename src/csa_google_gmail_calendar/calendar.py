@@ -109,7 +109,7 @@ class Calendar:
                                     etag=event.get("etag"), send_updates=send_updates)
 
     def find_free(self, *, time_min: str, time_max: str,
-                 calendar_ids: list[str]) -> list[dict[str, str]]:
+                 calendar_ids: list[str]) -> dict[str, Any]:
         """When are we free — the question people actually ask — rather than
         `query_freebusy`'s answer to a different one ("when are we busy").
 
@@ -119,42 +119,64 @@ class Calendar:
         shared boundary either invents a gap that doesn't exist or drops one that does. This
         method does that arithmetic once, here, so nobody downstream has to:
 
-        1. Every busy interval, from every calendar queried, is clipped to `[time_min,
-           time_max)` first — a block that starts before the window or ends after it must not
-           be allowed to carve a gap outside the window into existence, or leave a phantom
-           sliver of "free" time before/after the block where the window doesn't reach anyway.
-        2. Clipped intervals are merged across ALL calendars queried, not per-calendar, before
-           inversion — a slot free on calendar A but busy on calendar B is busy for the meeting
-           this is being asked about. Merging with `<=` (not `<`) at the boundary means two
-           blocks that touch exactly end-to-end (one ends at 10:00, the next starts at 10:00)
-           merge into one interval instead of leaving a technically-correct but useless
-           zero-length gap between them.
+        1. Every busy interval, from every READABLE calendar queried, is clipped to
+           `[time_min, time_max)` first — a block that starts before the window or ends after
+           it must not be allowed to carve a gap outside the window into existence, or leave a
+           phantom sliver of "free" time before/after the block where the window doesn't reach
+           anyway.
+        2. Clipped intervals are merged across ALL readable calendars queried, not
+           per-calendar, before inversion — a slot free on calendar A but busy on calendar B is
+           busy for the meeting this is being asked about. Merging with `<=` (not `<`) at the
+           boundary means two blocks that touch exactly end-to-end (one ends at 10:00, the
+           next starts at 10:00) merge into one interval instead of leaving a
+           technically-correct but useless zero-length gap between them.
         3. The merged busy intervals are inverted into the gaps between them, inside the
            window.
 
+        **"Could not read this calendar" is not "this calendar is free" (fix round 1, CINO
+        2026-09-25 — a real defect, not a `FakeBackend` artefact).** Google's real
+        `freebusy.query` reports an inaccessible, missing, or permission-denied calendar in a
+        per-calendar `errors` array, separate from `busy`, and `ApiBackend.query_freebusy`
+        passes that response through verbatim. The first version of this method read only
+        `cal.get("busy", [])` and so treated an `errors` entry exactly like an empty, genuinely
+        free calendar — silence rendered as availability, the same failure shape this project
+        has hit repeatedly elsewhere (a truncated MIME walk read as an empty message, an
+        unlisted scope silently discarded, `mark_spam` not moving the message). The felt
+        consequence: propose 2pm Tuesday because Dana's calendar could not be read, and two
+        meetings collide.
+
+        Fixed by changing the return shape, not just the logic, because a bare `list[dict]`
+        cannot keep the promise that empty means "no free time" once some calendars might be
+        unreadable — the structure has to say so itself:
+
+            {"free": [{"start": ..., "end": ...}, ...],
+             "unreadable_calendars": [{"id": ..., "reason": ...}, ...]}
+
+        A calendar that errors is named in `unreadable_calendars` and its `errors` entry is
+        never read as busy-or-free — it contributes NO interval either way, and the gaps in
+        `free` are computed only from the calendars that could be read. One bad id among ten
+        does not blank an otherwise useful answer; a caller (or a model) that sees
+        `unreadable_calendars` non-empty can say "I could not check Dana's calendar" instead of
+        proposing a time as though it had seen it.
+
         **Edge cases, resolved:**
 
-        - No busy blocks at all -> one gap covering the whole window. This is also what a
-          `calendar_id` `FakeBackend` has never heard of produces (it reports `{"busy": []}`
-          for an unknown id, deliberately indistinguishable from a calendar it knows to be
-          empty — see `FakeBackend.query_freebusy`'s docstring). That ambiguity belongs to the
-          Backend seam, not to this method: `find_free`'s OWN contract is unambiguous — an
-          empty **result** list means "no free time was found in the window you asked about",
-          full stop, never "no information". A calendar this fake or the real API cannot see
-          into at all is a different failure this method does not attempt to distinguish here
-          (there is nothing in `query_freebusy`'s return shape to distinguish it from "free"
-          with today's Backend contract).
-        - Busy covering the entire window -> an empty list. Per the point above, that reads
-          unambiguously as "no free time", not as "nothing was checked".
+        - No busy blocks at all, on any readable calendar -> `free` is one gap covering the
+          whole window, `unreadable_calendars` empty. This IS unambiguously "no free time was
+          found" now — the case that used to be confusable with "we learned nothing" is
+          instead named directly in `unreadable_calendars`.
+        - Busy covering the entire window -> `free` is `[]`. Distinguishable from "we could not
+          check" because `unreadable_calendars` is `[]` too in that case, and non-empty when a
+          calendar genuinely could not be read.
         - Adjacent busy blocks that touch exactly -> merged in step 2, so no zero-length gap
           is ever emitted between them.
         - A busy block extending beyond the window on either side -> clipped to the window in
           step 1, so it cannot produce a gap outside `[time_min, time_max)`.
 
-        Every boundary in the returned gaps is normalised to UTC (`+00:00`), regardless of
-        what offset the source calendars' busy intervals used - otherwise two gaps in the same
-        result could print in different offsets depending on which busy block's edge produced
-        them, correct as instants but needlessly confusing to read.
+        Every boundary in `free` is normalised to UTC and rendered with a trailing `Z`, not
+        `+00:00` (`isoformat()`'s own default) — Google renders its own UTC timestamps with
+        `Z`, every other timestamp this server hands back is `Z`, and a lone `+00:00` would
+        invite a model reading the result to treat it as a different, unfamiliar format.
         """
         window_start = _parse_rfc3339(time_min, context="time_min")
         window_end = _parse_rfc3339(time_max, context="time_max")
@@ -162,8 +184,20 @@ class Calendar:
             raise ValueError(f"time_max ({time_max!r}) is not after time_min ({time_min!r}).")
         result = self._b.query_freebusy(time_min=time_min, time_max=time_max,
                                         calendar_ids=calendar_ids)
+        calendars = result.get("calendars", {})
         intervals: list[tuple[datetime, datetime]] = []
-        for calendar_id, cal in result.get("calendars", {}).items():
+        unreadable: list[dict[str, str]] = []
+        for calendar_id in calendar_ids:
+            cal = calendars.get(calendar_id, {})
+            errors = cal.get("errors")
+            if errors:
+                # An errors entry means we learned NOTHING about this calendar - not that it
+                # is free. Its busy list (if any) is deliberately never read: Google does not
+                # promise one is even present alongside errors, and treating it as data would
+                # revive exactly the bug this fix closes.
+                reason = errors[0].get("reason", "unknown") if isinstance(errors[0], dict) else "unknown"
+                unreadable.append({"id": calendar_id, "reason": reason})
+                continue
             for index, busy in enumerate(cal.get("busy", [])):
                 where = f"calendar {calendar_id!r} busy interval {index}"
                 start = _parse_rfc3339(busy["start"], context=f"{where} start")
@@ -182,21 +216,22 @@ class Calendar:
                 merged[-1][1] = max(merged[-1][1], end)
             else:
                 merged.append([start, end])
-        # A busy interval can arrive in any offset a calendar happens to use; `isoformat()`
-        # renders whichever tzinfo the underlying datetime carries, not a normalised one. Two
-        # gaps in the same result could otherwise print in different offsets depending on
-        # which busy block's boundary produced them - correct instants, confusing output. All
-        # boundaries are normalised to UTC here so the result is offset-consistent regardless
-        # of what the source calendars used.
-        def _utc(moment: datetime) -> str:
-            return moment.astimezone(timezone.utc).isoformat()
 
-        gaps: list[dict[str, str]] = []
+        def _utc_z(moment: datetime) -> str:
+            # A busy interval can arrive in any offset a calendar happens to use;
+            # `isoformat()` renders whichever tzinfo the underlying datetime carries (and, once
+            # normalised to UTC, spells it "+00:00" - Python's own default, not Google's).
+            # Substituted for "Z" here to match how every other timestamp this server returns
+            # is rendered, rather than leaving a "+00:00" outlier a model might read as a
+            # different format.
+            return moment.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+        free: list[dict[str, str]] = []
         cursor = window_start
         for start, end in merged:
             if start > cursor:
-                gaps.append({"start": _utc(cursor), "end": _utc(start)})
+                free.append({"start": _utc_z(cursor), "end": _utc_z(start)})
             cursor = max(cursor, end)
         if cursor < window_end:
-            gaps.append({"start": _utc(cursor), "end": _utc(window_end)})
-        return gaps
+            free.append({"start": _utc_z(cursor), "end": _utc_z(window_end)})
+        return {"free": free, "unreadable_calendars": unreadable}

@@ -280,56 +280,74 @@ def test_reschedule_missing_event_raises_notfound():
 
 # --- find_free(): busy blocks inverted into gaps --------------------------------------------
 
+class _WithUnreadableCalendar(FakeBackend):
+    """A Backend double that reports one calendar id as unreadable, the shape Google's real
+    `freebusy.query` uses for an inaccessible, missing, or permission-denied calendar: a
+    per-calendar `errors` array, in place of `busy`. `FakeBackend` itself does not model this
+    (matches its documented stance of not distinguishing an unknown calendar from a
+    known-empty one); `ApiBackend` passes Google's real response through verbatim, so this is
+    what `find_free` must handle correctly in production even though the offline fake alone
+    would never surface it unprompted.
+    """
+    def __init__(self, *, unreadable_id: str, reason: str = "notFound", **kw):
+        super().__init__(**kw)
+        self._unreadable_id = unreadable_id
+        self._reason = reason
+
+    def query_freebusy(self, **kw):
+        result = super().query_freebusy(**kw)
+        if self._unreadable_id in result["calendars"]:
+            # Replaces "busy" entirely - Google does not promise one is even present
+            # alongside "errors", and keeping it around would invite reading it anyway.
+            result["calendars"][self._unreadable_id] = {
+                "errors": [{"domain": "calendar", "reason": self._reason}]}
+        return result
+
+
 def test_find_free_with_no_busy_blocks_is_the_whole_window():
     fake = FakeBackend(freebusy={"primary": []})
-    gaps = Calendar(fake).find_free(time_min="2026-10-01T09:00:00Z", time_max="2026-10-01T17:00:00Z",
-                                    calendar_ids=["primary"])
-    assert gaps == [{"start": "2026-10-01T09:00:00+00:00", "end": "2026-10-01T17:00:00+00:00"}]
-
-
-def test_find_free_unknown_calendar_id_reads_as_free():
-    """FakeBackend deliberately reports an id it has never heard of as `{"busy": []}` — same
-    as a calendar known to be empty. find_free inherits that ambiguity at the Backend seam,
-    but its OWN empty-vs-non-empty result contract stays unambiguous either way."""
-    fake = FakeBackend()  # no freebusy store seeded at all
-    gaps = Calendar(fake).find_free(time_min="2026-10-01T09:00:00Z", time_max="2026-10-01T17:00:00Z",
-                                    calendar_ids=["never-heard-of-it"])
-    assert len(gaps) == 1
+    out = Calendar(fake).find_free(time_min="2026-10-01T09:00:00Z", time_max="2026-10-01T17:00:00Z",
+                                   calendar_ids=["primary"])
+    assert out == {"free": [{"start": "2026-10-01T09:00:00Z", "end": "2026-10-01T17:00:00Z"}],
+                   "unreadable_calendars": []}
 
 
 def test_find_free_busy_covering_the_entire_window_is_an_empty_list():
+    """Distinguishable from `test_find_free_names_an_erroring_calendar...` below: here
+    `unreadable_calendars` is empty too, so `free == []` genuinely means "no free time",
+    never "we could not check"."""
     fake = FakeBackend(freebusy={"primary": [{"start": "2026-10-01T09:00:00Z",
                                               "end": "2026-10-01T17:00:00Z"}]})
-    gaps = Calendar(fake).find_free(time_min="2026-10-01T09:00:00Z", time_max="2026-10-01T17:00:00Z",
-                                    calendar_ids=["primary"])
-    assert gaps == []
+    out = Calendar(fake).find_free(time_min="2026-10-01T09:00:00Z", time_max="2026-10-01T17:00:00Z",
+                                   calendar_ids=["primary"])
+    assert out == {"free": [], "unreadable_calendars": []}
 
 
 def test_find_free_reports_the_gap_between_two_busy_blocks():
     fake = FakeBackend(freebusy={"primary": [
         {"start": "2026-10-01T09:00:00Z", "end": "2026-10-01T10:00:00Z"},
         {"start": "2026-10-01T11:00:00Z", "end": "2026-10-01T12:00:00Z"}]})
-    gaps = Calendar(fake).find_free(time_min="2026-10-01T09:00:00Z", time_max="2026-10-01T12:00:00Z",
-                                    calendar_ids=["primary"])
-    assert gaps == [{"start": "2026-10-01T10:00:00+00:00", "end": "2026-10-01T11:00:00+00:00"}]
+    out = Calendar(fake).find_free(time_min="2026-10-01T09:00:00Z", time_max="2026-10-01T12:00:00Z",
+                                   calendar_ids=["primary"])
+    assert out["free"] == [{"start": "2026-10-01T10:00:00Z", "end": "2026-10-01T11:00:00Z"}]
 
 
 def test_find_free_adjacent_busy_blocks_produce_no_zero_length_gap():
     fake = FakeBackend(freebusy={"primary": [
         {"start": "2026-10-01T09:00:00Z", "end": "2026-10-01T10:00:00Z"},
         {"start": "2026-10-01T10:00:00Z", "end": "2026-10-01T11:00:00Z"}]})
-    gaps = Calendar(fake).find_free(time_min="2026-10-01T09:00:00Z", time_max="2026-10-01T11:00:00Z",
-                                    calendar_ids=["primary"])
-    assert gaps == []
+    out = Calendar(fake).find_free(time_min="2026-10-01T09:00:00Z", time_max="2026-10-01T11:00:00Z",
+                                   calendar_ids=["primary"])
+    assert out["free"] == []
 
 
 def test_find_free_clips_a_busy_block_extending_beyond_the_window():
     fake = FakeBackend(freebusy={"primary": [
         {"start": "2026-10-01T07:00:00Z", "end": "2026-10-01T10:00:00Z"},
         {"start": "2026-10-01T16:00:00Z", "end": "2026-10-01T19:00:00Z"}]})
-    gaps = Calendar(fake).find_free(time_min="2026-10-01T09:00:00Z", time_max="2026-10-01T17:00:00Z",
-                                    calendar_ids=["primary"])
-    assert gaps == [{"start": "2026-10-01T10:00:00+00:00", "end": "2026-10-01T16:00:00+00:00"}]
+    out = Calendar(fake).find_free(time_min="2026-10-01T09:00:00Z", time_max="2026-10-01T17:00:00Z",
+                                   calendar_ids=["primary"])
+    assert out["free"] == [{"start": "2026-10-01T10:00:00Z", "end": "2026-10-01T16:00:00Z"}]
 
 
 def test_find_free_merges_busy_blocks_across_calendars():
@@ -338,9 +356,9 @@ def test_find_free_merges_busy_blocks_across_calendars():
     fake = FakeBackend(freebusy={
         "a": [{"start": "2026-10-01T09:00:00Z", "end": "2026-10-01T10:00:00Z"}],
         "b": [{"start": "2026-10-01T09:30:00Z", "end": "2026-10-01T10:30:00Z"}]})
-    gaps = Calendar(fake).find_free(time_min="2026-10-01T09:00:00Z", time_max="2026-10-01T11:00:00Z",
-                                    calendar_ids=["a", "b"])
-    assert gaps == [{"start": "2026-10-01T10:30:00+00:00", "end": "2026-10-01T11:00:00+00:00"}]
+    out = Calendar(fake).find_free(time_min="2026-10-01T09:00:00Z", time_max="2026-10-01T11:00:00Z",
+                                   calendar_ids=["a", "b"])
+    assert out["free"] == [{"start": "2026-10-01T10:30:00Z", "end": "2026-10-01T11:00:00Z"}]
 
 
 def test_find_free_compares_timezone_aware_not_as_strings():
@@ -349,12 +367,58 @@ def test_find_free_compares_timezone_aware_not_as_strings():
     fake = FakeBackend(freebusy={"primary": [
         {"start": "2026-10-01T02:00:00-07:00", "end": "2026-10-01T03:00:00-07:00"}]})
     # 02:00-07:00 == 09:00Z, 03:00-07:00 == 10:00Z
-    gaps = Calendar(fake).find_free(time_min="2026-10-01T09:00:00Z", time_max="2026-10-01T11:00:00Z",
-                                    calendar_ids=["primary"])
-    assert gaps == [{"start": "2026-10-01T10:00:00+00:00", "end": "2026-10-01T11:00:00+00:00"}]
+    out = Calendar(fake).find_free(time_min="2026-10-01T09:00:00Z", time_max="2026-10-01T11:00:00Z",
+                                   calendar_ids=["primary"])
+    assert out["free"] == [{"start": "2026-10-01T10:00:00Z", "end": "2026-10-01T11:00:00Z"}]
+
+
+def test_find_free_timestamps_end_in_z_not_offset():
+    fake = FakeBackend(freebusy={"primary": []})
+    out = Calendar(fake).find_free(time_min="2026-10-01T09:00:00Z", time_max="2026-10-01T17:00:00Z",
+                                   calendar_ids=["primary"])
+    assert out["free"][0]["start"].endswith("Z")
+    assert out["free"][0]["end"].endswith("Z")
+    assert "+00:00" not in out["free"][0]["start"]
 
 
 def test_find_free_invalid_window_raises_valueerror():
     with pytest.raises(ValueError, match="time_max"):
         Calendar(FakeBackend()).find_free(time_min="2026-10-01T17:00:00Z",
                                           time_max="2026-10-01T09:00:00Z", calendar_ids=["primary"])
+
+
+# --- find_free(): an unreadable calendar is not a free one (fix round 1, CINO 2026-09-25) ---
+
+def test_find_free_names_an_erroring_calendar_and_does_not_widen_the_gaps():
+    """The calendar's own store says it is busy the entire window — proving the busy data is
+    never read once it errors, whether that would have narrowed OR (as here, since it is the
+    only calendar queried) left the whole window looking free. `unreadable_calendars` is what
+    a caller must check before trusting `free` in this shape of result."""
+    fake = _WithUnreadableCalendar(unreadable_id="dana", freebusy={
+        "dana": [{"start": "2026-10-01T09:00:00Z", "end": "2026-10-01T17:00:00Z"}]})
+    out = Calendar(fake).find_free(time_min="2026-10-01T09:00:00Z", time_max="2026-10-01T17:00:00Z",
+                                   calendar_ids=["dana"])
+    assert out["unreadable_calendars"] == [{"id": "dana", "reason": "notFound"}]
+
+
+def test_find_free_mixed_query_computes_from_the_readable_calendar_and_names_the_other():
+    """One readable, one erroring. The erroring calendar's own data says it is busy the WHOLE
+    window (09:00-17:00) - if that were silently read as free (the original bug) or silently
+    read as busy, either would corrupt the answer. The only correct result is computed from
+    `primary` alone, with `dana` named separately."""
+    fake = _WithUnreadableCalendar(unreadable_id="dana", freebusy={
+        "primary": [{"start": "2026-10-01T09:00:00Z", "end": "2026-10-01T10:00:00Z"}],
+        "dana": [{"start": "2026-10-01T09:00:00Z", "end": "2026-10-01T17:00:00Z"}]})
+    out = Calendar(fake).find_free(time_min="2026-10-01T09:00:00Z", time_max="2026-10-01T11:00:00Z",
+                                   calendar_ids=["primary", "dana"])
+    assert out["free"] == [{"start": "2026-10-01T10:00:00Z", "end": "2026-10-01T11:00:00Z"}]
+    assert out["unreadable_calendars"] == [{"id": "dana", "reason": "notFound"}]
+
+
+def test_find_free_all_calendars_readable_leaves_unreadable_calendars_empty():
+    fake = FakeBackend(freebusy={
+        "a": [{"start": "2026-10-01T09:00:00Z", "end": "2026-10-01T10:00:00Z"}],
+        "b": []})
+    out = Calendar(fake).find_free(time_min="2026-10-01T09:00:00Z", time_max="2026-10-01T11:00:00Z",
+                                   calendar_ids=["a", "b"])
+    assert out["unreadable_calendars"] == []
