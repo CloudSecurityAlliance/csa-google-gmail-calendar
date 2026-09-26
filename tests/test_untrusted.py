@@ -6,9 +6,9 @@ name never goes through `_markdown` at all - `scrub` is the only seam all of the
 """
 from csa_google_gmail_calendar.mcp import _untrusted
 
-BIDI_RLO = "‮"
-BIDI_LRO = "‭"
-BOM = "﻿"
+BIDI_RLO = "\u202e"
+BIDI_LRO = "\u202d"
+BOM = "\ufeff"
 
 
 def test_neutralise_still_defuses_c0_and_del():
@@ -85,3 +85,38 @@ def test_suspicious_count_matches_what_scrub_actually_changed():
     scrubbed = _untrusted.scrub(text)
     assert count == 1
     assert scrubbed != text
+
+
+def test_no_live_bidi_control_character_exists_anywhere_in_this_repository() -> None:
+    """Source must NAME a bidi override, never contain one.
+
+    Bandit caught this the honest way: `mcp/_untrusted.py`'s own docstring — the prose
+    explaining why bidi overrides are stripped from message bodies — contained a live
+    U+202E. The file defending against Trojan Source was itself a Trojan Source sample,
+    and every reader of it on GitHub saw reordered text.
+
+    A test fixture needing the real character writes `"\\u202e"`: identical value, readable
+    source. Prose names the codepoint and carries none. This test is what keeps it that way,
+    because the failure mode is invisible in every editor that renders the file correctly.
+    """
+    import pathlib
+    import subprocess
+
+    dangerous = set(range(0x202A, 0x202F)) | set(range(0x2066, 0x206A)) | {0xFEFF}
+    root = pathlib.Path(__file__).resolve().parent.parent
+    tracked = subprocess.run(["git", "ls-files", "*.py", "*.md"], cwd=root,
+                             capture_output=True, text=True, check=True).stdout.split()
+    offenders = []
+    for name in tracked:
+        try:
+            text = (root / name).read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        for number, line in enumerate(text.splitlines(), 1):
+            found = sorted({f"U+{ord(c):04X}" for c in line if ord(c) in dangerous})
+            if found:
+                offenders.append(f"{name}:{number} {','.join(found)}")
+    assert not offenders, (
+        "live bidi/BOM control characters in tracked source — write the escape "
+        "(\\u202e) where a value is needed, or name the codepoint in prose:\n  "
+        + "\n  ".join(offenders))

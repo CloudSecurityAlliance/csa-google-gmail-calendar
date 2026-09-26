@@ -124,9 +124,9 @@ def test_hidden_html_content_is_surfaced_not_silently_dropped():
 def test_bidi_override_codepoints_are_stripped_and_counted():
     """A RIGHT-TO-LEFT OVERRIDE can make a body render as text it does not contain."""
     p = {"mimeType": "text/plain", "headers": [],
-         "body": {"data": _b64("safe‮txt.exe")}}
+         "body": {"data": _b64("safe\u202etxt.exe")}}
     m = Mail(FakeBackend(messages={"m1": _msg(p)})).read_message("m1")
-    assert "‮" not in m.body_markdown
+    assert "\u202e" not in m.body_markdown
     assert any("bidi" in t for t in m.transformations)
 
 

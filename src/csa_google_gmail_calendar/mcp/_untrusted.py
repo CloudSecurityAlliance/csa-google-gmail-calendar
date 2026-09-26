@@ -50,7 +50,7 @@ and a mid-document BOM (U+FEFF) - but only through `mail._render_body`, i.e. onl
 message BODY. Everything else this project reads from someone else and hands back untouched -
 a subject line, a `From` display name, `AttachmentRef.filename`, an event summary, an attendee
 name - reaches the reader through `scrub`, which (before this fix) neutralised C0/DEL only.
-`evil‮gnp.exe` (displays as `evil.png`, Trojan Source's own canonical example) would
+`evilU+202Egnp.exe` (displays as `evil.png`, Trojan Source's own canonical example) would
 therefore survive a filename or a subject unchanged, while the identical bytes in a message
 body would already have been stripped - the same content defended in one field and not
 another is not a defensible boundary. `_untrusted.py`'s own docstring above already names event

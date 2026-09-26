@@ -56,10 +56,10 @@ def test_errors_scrubs_a_bidi_override_out_of_a_successful_result_sync():
     e.g. an `AttachmentRef.filename` - must still lose a Trojan-Source bidi override on the
     way out, not just C0/DEL."""
     def fn():
-        return {"filename": "invoice‮fdp.exe"}
+        return {"filename": "invoice\u202efdp.exe"}
     wrapped = _base._errors(fn)
     out = wrapped()
-    assert "‮" not in out["filename"]
+    assert "\u202e" not in out["filename"]
 
 
 def test_errors_scrubs_the_refusal_message_too_sync():
@@ -78,16 +78,16 @@ def test_errors_scrubs_the_refusal_message_too_sync():
 
 def test_errors_scrubs_a_bidi_override_out_of_a_refusal_message_sync():
     def fn():
-        raise exc.PolicyError("'invoice‮fdp.exe' resolves outside the root")
+        raise exc.PolicyError("'invoice\u202efdp.exe' resolves outside the root")
     wrapped = _base._errors(fn)
     with pytest.raises(ToolError) as excinfo:
         wrapped()
-    assert "‮" not in str(excinfo.value)
+    assert "\u202e" not in str(excinfo.value)
 
 
 def test_errors_logs_the_suspicious_count_for_a_scrubbed_success_sync(caplog):
     def fn():
-        return {"filename": "invoice‮fdp.exe"}
+        return {"filename": "invoice\u202efdp.exe"}
     wrapped = _base._errors(fn)
     with caplog.at_level("INFO", logger="csa_google_gmail_calendar.mcp._tools._base"):
         wrapped()
@@ -96,7 +96,7 @@ def test_errors_logs_the_suspicious_count_for_a_scrubbed_success_sync(caplog):
 
 def test_errors_logs_the_suspicious_count_for_a_scrubbed_refusal_sync(caplog):
     def fn():
-        raise exc.PolicyError("'invoice‮fdp.exe' resolves outside the root")
+        raise exc.PolicyError("'invoice\u202efdp.exe' resolves outside the root")
     wrapped = _base._errors(fn)
     with caplog.at_level("INFO", logger="csa_google_gmail_calendar.mcp._tools._base"):
         with pytest.raises(ToolError):

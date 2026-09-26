@@ -88,11 +88,25 @@ def main() -> int:
 
     enabled = policy.DEFAULT_ENABLED
     required = auth.scopes_for(enabled)
+    # THIS server's client, never a sibling's. An earlier draft defaulted to
+    # ~/.csa_google_workspace/client_secret.json from when reusing the Drive project was still the
+    # plan; it authenticated against csa-drive-docs-mcp, failed on the first Gmail call, and left a
+    # Gmail grant attached to the Drive app. Defaulting across a project boundary is how a
+    # credential ends up holding scopes nobody intended it to have.
     secrets = os.environ.get("CSA_GGC_CLIENT_SECRETS",
-                             os.path.expanduser("~/.csa_google_workspace/client_secret.json"))
+                             os.path.expanduser("~/.csa_google_gmail_calendar/client_secret.json"))
     token = os.environ.get("CSA_GGC_TOKEN_PATH",
                            os.path.expanduser("~/.csa_google_gmail_calendar/token.json"))
     os.makedirs(os.path.dirname(token), exist_ok=True)
+
+    import json as _json
+    _pid = (_json.load(open(secrets)).get("installed") or {}).get("project_id", "")
+    print(f"  client belongs to project: {_pid or '<unknown>'}")
+    if "gmail" not in _pid and "calendar" not in _pid:
+        print(f"  REFUSING: {_pid!r} does not look like this server's project. A client from a "
+              f"sibling project will consent successfully and then 403 on the first call, leaving "
+              f"a grant attached to the wrong app. Set CSA_GGC_CLIENT_SECRETS deliberately.")
+        return 2
 
     print("\n[1] authenticate, and check the consent asked for no more than the capabilities need")
     creds = auth.load_credentials(secrets, token, required)
@@ -204,10 +218,11 @@ def main() -> int:
 
     @check("an event is created and reads back with the times we set")
     def _create():
-        ev = cal.create(calendar_id="primary",
-                        summary="csa-google-gmail-calendar live probe",
-                        start=start.isoformat().replace("+00:00", "Z"),
-                        end=end.isoformat().replace("+00:00", "Z"))
+        ev = cal.create(calendar_id="primary", body={
+            "summary": "csa-google-gmail-calendar live probe",
+            "start": {"dateTime": start.isoformat().replace("+00:00", "Z")},
+            "end": {"dateTime": end.isoformat().replace("+00:00", "Z")},
+        })
         created.append(ev["id"])
         got = backend.get_event(calendar_id="primary", event_id=ev["id"])
         assert got["id"] == ev["id"]
