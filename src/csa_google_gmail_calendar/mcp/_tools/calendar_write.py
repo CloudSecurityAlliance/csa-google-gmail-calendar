@@ -1,12 +1,30 @@
-"""The Calendar writing tier: `create_event`, `update_event`, `respond_to_event` - gated
+"""The Calendar writing tier: `create_event`, `reschedule_event`, `respond_to_event` - gated
 `policy.CALENDAR_WRITE` - and `delete_event`, gated `policy.CALENDAR_DELETE` (OFF by default;
 see `policy.DEFAULT_ENABLED`). 4 tools.
+
+**`reschedule_event` is named for exactly what it does, and nothing more (fix round 1, CINO
+2026-09-26).** It wraps `calendar.Calendar.reschedule`, which moves an event's `start`/`end`
+and touches nothing else - no summary, location, description, or attendee list. The tool was
+first named `update_event`, which ADR-001's own rule (already applied to `delete_email`/
+`trash_email` elsewhere in this project - "a tool name is a claim made to a reader who cannot
+check it") says is the wrong name for it: a reader who wants to fix a meeting's title would
+reach for `update_event` on the strength of the name alone, find no argument for it, and either
+waste a turn or - worse - call it with the times it already has, believing something changed.
+`reschedule_event` claims only what the tool does. A general event patch (summary/location/
+description/attendees) is a real gap this surface has, stated as a negative capability in the
+tool's own docstring rather than hidden - and is deliberately NOT built here: a field-level
+patch has its own concurrency story (which fields conflict, whether a stale `etag` should
+block one field's write when only a different field changed elsewhere) that this task did not
+plan for and `calendar.Calendar` does not yet implement. Inventing it as a side effect of a
+rename would be exactly the kind of scope creep the negative-capability discipline exists to
+avoid; the honest narrow tool, honestly named, is the right shipping state, and a general
+`update_event` is free to arrive later as its own decision.
 
 **`respond_to_event` is ONE tool with a constrained `response` argument** (ADR-016: a tool is
 an operation plus constrained arguments), never three separate `accept_event`/`decline_event`/
 `tentative_event` tools that would each describe the same operation.
 
-**`create_event`/`update_event` default to notifying attendees (`send_updates="all"`);
+**`create_event`/`reschedule_event` default to notifying attendees (`send_updates="all"`);
 `respond_to_event` defaults to notifying nobody (`send_updates="none"`).** This is not an
 inconsistency - see each tool's own docstring for why. In one sentence: creating or
 rescheduling changes a fact an attendee must act on (a new commitment, a changed time);
@@ -65,8 +83,8 @@ def register_calendar_write_tools(app: MCPServer, backend: Backend,
             the OTHER way, because responding to an existing invitation changes no fact an
             attendee must act on, while creating one does.
 
-            Use `update_event` afterward to move it, or `respond_to_event` to RSVP to someone
-            ELSE's invitation rather than creating your own."""
+            Use `reschedule_event` afterward to move it, or `respond_to_event` to RSVP to
+            someone ELSE's invitation rather than creating your own."""
             body: dict[str, Any] = {"summary": summary, "start": _boundary_node(start),
                                     "end": _boundary_node(end)}
             if description is not None:
@@ -78,18 +96,24 @@ def register_calendar_write_tools(app: MCPServer, backend: Backend,
             return Calendar(backend).create(calendar_id=calendar_id, body=body,
                                             send_updates=send_updates)
 
-    if policy_obj.allows("update_event"):
+    if policy_obj.allows("update_event"):  # Backend method name; the TOOL is reschedule_event
         @tool(app, annotations=WRITE)
-        def update_event(event_id: str, start: str, end: str, calendar_id: str = "primary",
-                         send_updates: str = "all") -> dict[str, object]:
-            """Move an event to a new start/end time - a RESCHEDULE, and the only kind of edit
-            this tool makes. Everything else about the event (summary, description, location,
-            attendees) is left exactly as it was: the patch sent to Google carries only
-            `start`/`end`, so a change someone else made to another field since you last read
-            the event is never silently overwritten. A concurrent edit to the event itself
-            (by anyone, to any field) between this tool's own read and its write is refused as
-            a conflict rather than silently lost - this tool always reads the event fresh
-            immediately before writing, under that read's own etag.
+        def reschedule_event(event_id: str, start: str, end: str, calendar_id: str = "primary",
+                             send_updates: str = "all") -> dict[str, object]:
+            """Move an event to a new start/end time. This is ALL this tool does - it cannot
+            change a summary, location, description, or attendee list; there is no argument for
+            any of those, and no other tool in this server that edits them either. If you want
+            to correct a meeting's title or add an attendee, this is not the tool and none
+            currently exists for it - say so rather than calling this with the time unchanged
+            and assuming something happened.
+
+            Everything about the event other than `start`/`end` is left exactly as it was: the
+            patch sent to Google carries only those two fields, so a change someone else made
+            to another field since you last read the event is never silently overwritten. A
+            concurrent edit to the event itself (by anyone, to any field) between this tool's
+            own read and its write is refused as a conflict rather than silently lost - this
+            tool always reads the event fresh immediately before writing, under that read's own
+            etag.
 
             `start`/`end` accept the same formats as `create_event`'s; `end` before `start` is
             refused.
@@ -101,10 +125,7 @@ def register_calendar_write_tools(app: MCPServer, backend: Backend,
             invite, for instance). This tool does not refuse outright when the event has
             attendees - organisers reschedule meetings with attendees on them constantly, and
             that is ordinary, legitimate use, not the kind of on-someone-else's-behalf action
-            `respond_to_event` exists to block.
-
-            There is no tool in this server that edits an event's summary, description,
-            location, or attendee list - only its time."""
+            `respond_to_event` exists to block."""
             return Calendar(backend).reschedule(
                 calendar_id=calendar_id, event_id=event_id, start=_boundary_node(start),
                 end=_boundary_node(end), send_updates=send_updates)
@@ -133,7 +154,7 @@ def register_calendar_write_tools(app: MCPServer, backend: Backend,
                 whoever owns the invite list adding you as an attendee first.
 
             **Sends NO notification (`send_updates="none"`), unlike `create_event`/
-            `update_event`'s default of `"all"`.** Responding to an invitation is not an edit to
+            `reschedule_event`'s default of `"all"`.** Responding to an invitation is not an edit to
             the meeting itself - nobody's copy of "when is this" changes, so nobody needs mail
             about your answer."""
             return Calendar(backend).respond(calendar_id=calendar_id, event_id=event_id,

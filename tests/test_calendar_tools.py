@@ -77,7 +77,9 @@ def test_create_event_treats_a_bare_date_as_an_all_day_event():
     assert out["end"] == {"date": "2026-10-02"}
 
 
-def test_update_event_moves_only_the_time_and_notifies_by_default():
+def test_reschedule_event_moves_only_the_time_and_notifies_by_default():
+    """Named `reschedule_event`, not `update_event` (fix round 1, CINO 2026-09-26) - the tool
+    moves an event's time only, and the name must not claim more than that."""
     seen = {}
 
     class Spy(FakeBackend):
@@ -90,13 +92,23 @@ def test_update_event_moves_only_the_time_and_notifies_by_default():
                               "end": {"dateTime": "2026-10-01T09:30:00Z"},
                               "etag": '"1"'}})
     s = create_server(backend=fake, policy=policy.Policy())
-    out = _call(s, "update_event", event_id="e1",
+    out = _call(s, "reschedule_event", event_id="e1",
                start="2026-10-02T09:00:00Z", end="2026-10-02T09:30:00Z")
     assert out["summary"] == "Standup"  # untouched
     assert out["start"] == {"dateTime": "2026-10-02T09:00:00Z"}
     assert seen["send_updates"] == "all"
     assert seen["body"] == {"start": {"dateTime": "2026-10-02T09:00:00Z"},
                             "end": {"dateTime": "2026-10-02T09:30:00Z"}}
+
+
+def test_no_tool_is_named_update_event():
+    """ADR-001, applied here the same way as `delete_email`: a tool name is a claim made to a
+    reader who cannot check it. This tool moves an event's time only - `update_event` would
+    claim a general patch (summary/location/description/attendees) this server does not
+    implement, so the tool is named `reschedule_event` instead and `update_event` names no
+    tool at all."""
+    s = create_server(backend=FakeBackend(), policy=policy.Policy())
+    assert "update_event" not in {t.name for t in s._tool_manager.list_tools()}
 
 
 def test_respond_to_event_refuses_when_the_event_has_no_attendees_at_all():

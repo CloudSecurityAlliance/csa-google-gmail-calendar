@@ -69,7 +69,7 @@ _TOOL_TO_GATED_METHOD: dict[str, str] = {
     "find_free_time": "query_freebusy",
     # --- Calendar writes (task 12) ---
     "create_event": "create_event",
-    "update_event": "update_event",
+    "reschedule_event": "update_event",  # tool name differs from the Backend method it calls
     "respond_to_event": "respond_to_event",
     "delete_event": "delete_event",
 }

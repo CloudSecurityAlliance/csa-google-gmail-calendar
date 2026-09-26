@@ -78,7 +78,11 @@ TOOL_CAPABILITIES: dict[str, str | None] = {
     "find_free_time": "calendar.read",  # calls Backend.query_freebusy, gated CALENDAR_READ
     # --- Calendar writes (task 12, `_tools/calendar_write.py`) - policy.CALENDAR_WRITE ---
     "create_event": "calendar.write",
-    "update_event": "calendar.write",     # a reschedule - see Calendar.reschedule
+    # tool name differs from the Backend method it calls (like archive_email->archive_message
+    # above): "reschedule_event", not "update_event" - fix round 1 (CINO 2026-09-26), ADR-001:
+    # a tool name is a claim made to a reader who cannot check it, and this tool moves an
+    # event's time only, nothing else about it.
+    "reschedule_event": "calendar.write",
     "respond_to_event": "calendar.write",
     # --- Calendar delete (task 12, `_tools/calendar_write.py`) - policy.CALENDAR_DELETE,
     # OFF by default (see policy.DEFAULT_ENABLED) ---
