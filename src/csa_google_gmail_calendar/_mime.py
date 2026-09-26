@@ -241,7 +241,19 @@ def build(
 
         seen: dict[str, int] = {}
         for p in resolved:
-            content = p.read_bytes()  # first and only read of this attachment's content
+            # TOCTOU: `p` was `stat()`'d above, not read - the file can vanish, or change, in
+            # the gap between that `stat()` and this `read_bytes()`. Every other failure in
+            # this module is translated to `PolicyError` (header injection, blank recipients,
+            # oversize, missing policy); a bare `FileNotFoundError`/`PermissionError` escaping
+            # here would be the one exception to that, so it is caught and named instead.
+            # Task 5's allowlist still bounds which path could ever be reached - this is a
+            # confusing error type in a benign race, not a security gap.
+            try:
+                content = p.read_bytes()  # first and only read of this attachment's content
+            except OSError as exc:
+                raise PolicyError(
+                    f"{p} could not be read: it changed or disappeared after being checked "
+                    f"({exc}). Try again.") from exc
             filename = _unique_filename(seen, p.name)
             guessed, _ = mimetypes.guess_type(filename)
             maintype, _, subtype = (guessed or "application/octet-stream").partition("/")

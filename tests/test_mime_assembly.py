@@ -172,6 +172,75 @@ def test_the_post_assembly_check_still_catches_a_wrong_estimate(tmp_path, monkey
                     attach_policy=AttachmentPolicy(str(d)))
 
 
+def test_a_file_deleted_between_the_stat_and_the_read_is_a_policyerror_not_a_bare_oserror(
+    tmp_path, monkeypatch,
+):
+    """FIX 1 (fix round 2). The size check runs on a `stat()`; the content comes from a
+    SEPARATE `read_bytes()` moments later - the file can vanish (or be swapped) in the gap
+    between them. Every other failure in this module is translated to `PolicyError` (header
+    injection, blank recipients, oversize, missing policy); a bare `FileNotFoundError` escaping
+    here would be the one exception to that. Simulated by deleting the file immediately before
+    the real `read_bytes()` call it is patched around - Task 5's allowlist still bounds what
+    path could ever have been reached, so this is a confusing error in a benign race, not a
+    security hole.
+    """
+    d = tmp_path / "a"
+    d.mkdir()
+    (d / "r.pdf").write_bytes(b"%PDF-1.4 x")
+
+    real_read_bytes = Path.read_bytes
+
+    def _vanish_then_read(self: Path) -> bytes:
+        if self.name == "r.pdf":
+            self.unlink()
+        return real_read_bytes(self)
+
+    monkeypatch.setattr(Path, "read_bytes", _vanish_then_read)
+    with pytest.raises(PolicyError, match="changed or disappeared"):
+        _mime.build(["a@example.com"], "s", "b", attachments=["r.pdf"],
+                    attach_policy=AttachmentPolicy(str(d)))
+
+
+def test_the_estimate_stays_conservative_with_many_attachments_and_a_long_cjk_filename(
+    tmp_path,
+):
+    """FIX 3 (fix round 2). `_FIXED_OVERHEAD_BYTES` / `_PER_ATTACHMENT_OVERHEAD_BYTES` were
+    hand-estimated, not derived from a measured worst case. Stressed here with the two things
+    most likely to break a generous-but-untested constant: 20 attachments near the message
+    ceiling (so per-part overhead is paid 20 times over, not once) and one long CJK filename
+    (RFC 2231 percent-encodes each UTF-8 byte, so a non-ASCII filename's encoded form can run
+    several times its character count). Compares the ESTIMATE directly against the REAL
+    assembled RFC822 size for the identical inputs - the direction the whole design depends on
+    is estimate >= actual, and if this ever goes the other way that is a real finding: raise
+    the constants, don't loosen this assertion.
+    """
+    d = tmp_path / "a"
+    d.mkdir()
+    long_cjk_name = ("日本語のとても長いファイル名" * 5) + ".pdf"  # 74 chars, 214 UTF-8 bytes
+    paths = []
+    per_file = int(0.85 * 1024 * 1024)  # 19 x ~0.85 MB + 1 MB CJK-named file =~ 17.1 MB total,
+    for i in range(19):                # deliberately close to the 25 MB ceiling
+        name = f"attachment-{i}.bin"
+        (d / name).write_bytes(b"\0" * per_file)
+        paths.append(name)
+    (d / long_cjk_name).write_bytes(b"\0" * (1024 * 1024))
+    paths.append(long_cjk_name)
+
+    sizes = [(d / p).stat().st_size for p in paths]
+    header_bytes = _mime._utf8_len("s", "b", None, "a@example.com", "", "", None, None, None)
+    estimated = _mime._estimate_rfc822_size(header_bytes=header_bytes, attachment_sizes=sizes)
+
+    raw_b64 = _mime.build(["a@example.com"], "s", "b", attachments=paths,
+                          attach_policy=AttachmentPolicy(str(d)))
+    actual = len(base64.urlsafe_b64decode(raw_b64 + "=" * (-len(raw_b64) % 4)))
+
+    assert estimated >= actual, (
+        f"estimate ({estimated} bytes) fell BELOW the real assembled size ({actual} bytes) for "
+        f"20 attachments plus a long CJK filename - the overhead constants under-count this "
+        f"case; raise _FIXED_OVERHEAD_BYTES / _PER_ATTACHMENT_OVERHEAD_BYTES rather than "
+        f"loosening this assertion.")
+
+
 def test_the_post_assembly_guard_measures_rfc822_not_the_api_raw_payload(tmp_path, monkeypatch):
     """REGRESSION for the first review round: the final guard must measure `msg.as_bytes()`,
     not `base64.urlsafe_b64encode` of it - the latter is bigger again (see the module
@@ -222,6 +291,33 @@ def test_a_crlf_in_cc_is_refused_not_injected():
 def test_a_bare_lf_in_from_addr_is_refused_not_injected():
     with pytest.raises(PolicyError, match="line break"):
         _mime.build(["a@example.com"], "s", "b", from_addr="me@example.com\nX-Injected: true")
+
+
+def test_the_default_email_policy_is_what_makes_crlf_rejection_possible():
+    """FIX 2 (fix round 2). The four CRLF tests above only work because `EmailMessage()` -
+    unqualified, exactly as `_mime.build` constructs it - defaults to `email.policy.default`,
+    which raises `ValueError` from `__setitem__` on an embedded `\\r`/`\\n`. Nothing before this
+    test asserted that policy is actually in force: if a future change swapped in
+    `email.policy.compat32` (or built a header by string concatenation instead of
+    `msg[name] = value`), `_set_header`'s `try/except ValueError` would catch nothing and the
+    four tests above would stop raising at the point they check.
+
+    The failure mode, made concrete and verified rather than assumed: under `compat32`,
+    `msg[name] = value` accepts the CRLF-carrying value with no exception at all - stored
+    verbatim, injected header text intact - so `_set_header`'s translation is a silent no-op
+    exactly where this test proves it. (The `email` package's own Generator does independently
+    refuse to SERIALIZE that value later, at `as_bytes()`/`as_string()` time, with a completely
+    different and untranslated `email.errors.HeaderParseError` - a real safety net, but not this
+    module's, and not one `build()` catches anywhere. That a bare stdlib exception of a
+    different type would still surface downstream is not a rebuttal of the concern; it is the
+    concern - `_set_header`'s own promise, "never a bare stdlib exception past this module's
+    boundary", is exactly what a switch away from `email.policy.default` would break.)
+    """
+    assert _mime.EmailMessage().policy is email.policy.default
+
+    compat_msg = _mime.EmailMessage(policy=email.policy.compat32)
+    compat_msg["X-Test"] = "a\r\nX-Injected: true"  # no exception raised under compat32
+    assert compat_msg["X-Test"] == "a\r\nX-Injected: true"
 
 
 # --- Non-ASCII in headers and filenames: RFC 2047/2231 encoding should be automatic - verified,
