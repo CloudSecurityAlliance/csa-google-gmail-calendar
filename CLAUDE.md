@@ -8,9 +8,39 @@ and Calendar v3 REST APIs. Fourth in the line after `csa-skilljar`, `csa-google-
 analysis layer (raw MIME fetch, SPF/DKIM/DMARC, header-presentation sanity, spam and
 prompt-injection checks). The second is roughly half the product — see §9 of the design spec.
 
-> **There is no `src/`. Nothing is implemented.** This repository currently holds the upstream
-> Discovery snapshots, the operation inventory, the live captures of every competing MCP surface,
-> and the design that those constrain. **Never describe a feature here as working.**
+> **Implemented.** `src/csa_google_gmail_calendar/` holds the library (`backend.py`, `policy.py`,
+> `auth.py`, `mail.py`, `calendar.py`) and the MCP server (`mcp/`) - 46 tools, an offline test
+> suite against `FakeBackend`, and the config/demo/CI surface. Only a live probe against a real
+> Google account (task 14 of `docs/superpowers/plans/2026-09-25-gmail-calendar-first-
+> implementation.md`) remains. The Discovery snapshots, operation inventory, and live captures
+> below are the evidence the design was built against - keep them, they explain *why* the tool
+> vocabulary is what it is, but they no longer describe the repository's own state.
+
+## Working in this repo (code)
+
+- **The seam is `Backend`/`PolicyBackend`, not the MCP layer.** `policy.Policy.require` gates
+  every `Backend` method by name (`policy._GATES`) and fails closed for an undeclared one;
+  `_capabilities.TOOL_CAPABILITIES` is the separate map answering "what can the SERVER reach",
+  and `tests/test_mcp_capabilities.py` asserts the two stay honest against each other and
+  against the live tool registry. A tool your task adds needs a row in BOTH.
+- **A disabled capability is an absent tool, never a registered-but-refusing one** - the bug
+  `_capabilities.py`'s own module docstring records finding in the sibling `csa-google-workspace`
+  repo. `CSA_GGC_FLAVOUR` (`mcp/_flavours.py`) applies the identical rule one layer further out:
+  a flavour also removes tools by absence, on top of whatever capabilities already allow.
+  `describe_configuration` is the one tool that must say what is hidden and why, since an absent
+  tool otherwise reads as "unsupported" to a model with no way to check.
+- **Every offline test runs against `FakeBackend`** (`backend.py`) - real Google calls and the
+  interactive OAuth flow are the gated live suite (task 14), not this suite. `fail_under = 90`
+  in `pyproject.toml` is a real gate; `_auth_flow.py`/`_login.py`'s interactive paths are marked
+  `# pragma: no cover` rather than used to justify lowering it - see those files for what covers
+  them instead.
+- **`ruff check .` and `mypy` must both pass** before a PR; CI (`.github/workflows/ci.yml`) runs
+  both plus `pytest --cov` on Python 3.10-3.14.
+- **The README's tool table is generated**, the same convention this repo already used for the
+  coverage tables (`scripts/coverage.py`): `scripts/generate_tool_table.py` regenerates it from
+  the live registry between the `<!-- TOOLS:START/END -->` markers. Hand-editing between them is
+  silently overwritten next regeneration, and `tests/test_docs_drift.py` fails if a registered
+  tool is undocumented.
 
 ## Where things live
 

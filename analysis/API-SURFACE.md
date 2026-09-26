@@ -109,6 +109,12 @@ Note the trap in that column: sorting scopes by string length puts `calendar` fi
 `calendar` is the *broadest* scope in the set. Narrowness has to be a declared partial
 order, not an inferred one.
 
+One more trap sits a level up: `narrowest_scope` says what the API would *accept* for that one
+method in isolation, not what this server should *request* given everything a capability
+turns on — `events.get`'s narrowest listed scope cannot read a private calendar and
+`events.insert`'s cannot patch an event someone else organised, so `auth._CAPABILITY_SCOPES`
+deliberately requests a broader, ranked-at-or-above scope for both (carry-forward-task-9.md).
+
 ### 4. There is no `deprecated` flag, so drift will be silent
 
 Discovery documents carry no deprecation marker. `scripts/inventory.py` detects it by

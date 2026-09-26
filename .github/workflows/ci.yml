@@ -1,0 +1,54 @@
+name: ci
+on: [push, pull_request]
+
+# Declared at workflow level so every job inherits it, rather than per-job on whichever one a
+# scanner happens to flag - the identical reasoning csa-zendesk's own `tests.yml` states for the
+# same block. Nothing here needs more than read: every job checks out, installs, and runs a
+# gate. `release.yml` scopes `id-token: write` to its publish job alone and states
+# `contents: read` at the top for the same reason.
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with: { python-version: "3.12" }
+      - run: pip install -e ".[dev]"
+      - run: ruff check .
+      - run: mypy
+
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        # The floor of the support promise (`requires-python = ">=3.10"`, pyproject's own
+        # classifiers 3.10-3.14) tested directly, not assumed from the floor alone.
+        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with: { python-version: "${{ matrix.python-version }}" }
+      - run: pip install -e ".[dev]"
+      # `fail_under = 90` already lives in pyproject.toml ([tool.coverage.report]) - repeated
+      # here as `--cov-fail-under` so a change to either place is visible as a diff to the CI
+      # file too, not only to the config it mirrors. `_auth_flow.py`/`_login.py`'s interactive
+      # paths are `# pragma: no cover` with a comment naming what covers them (task 14's gated
+      # live suite) - this gate is real for everything else, not lowered to accommodate them.
+      - run: python -m pytest --cov --cov-report=term-missing --cov-fail-under=90
+
+  security:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with: { python-version: "3.12" }
+      # Deliberately unpinned: the point is to observe what a real `pip install
+      # csa-google-gmail-calendar` resolves to today, not what a pinned closure nobody installs
+      # resolves to. The same gate runs on the release path (release.yml), because a CVE
+      # disclosed after the last merge would otherwise ship unnoticed.
+      - run: pip install -e ".[dev]" pip-audit bandit
+      - run: pip-audit --skip-editable
+      - run: bandit -r src

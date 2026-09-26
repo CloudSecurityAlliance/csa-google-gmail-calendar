@@ -1,0 +1,201 @@
+"""Fail-closed both ways (`_capabilities.py`'s own docstring): every registered tool is
+declared, and every declaration corresponds to a registered tool.
+
+As of task 10 only the auth-lifecycle tools exist (`authenticate`, `auth_status`, `logout`),
+none of which is gated on a capability - see `_capabilities.py`. Tasks 11/12 extend
+`_TOOL_TO_GATED_METHOD` below as they register capability-gated tools; the fail-closed tests
+themselves are written generically so they do not need touching when that happens.
+"""
+import pytest
+
+from csa_google_gmail_calendar import policy
+from csa_google_gmail_calendar.mcp import create_server
+from csa_google_gmail_calendar.mcp._capabilities import TOOL_CAPABILITIES
+
+# Tool name -> the Backend method it calls, for tools whose declared capability
+# (`TOOL_CAPABILITIES`) must match that method's gate (`policy._GATES`). Populated as
+# capability-gated tools are registered (tasks 11/12); empty today because the auth tools
+# never call a gated Backend method at all - see `_capabilities.py`'s own note on why they are
+# `None`.
+#
+# OBLIGATION ON WHOEVER EXTENDS THIS (fix round 1, task 10 review): unlike the two tests above
+# it, `test_declared_capability_matches_the_backend_gate` is NOT structurally generic - it can
+# only check pairs that are IN this map. A task 11/12 author who registers a new
+# capability-gated tool, gets its `TOOL_CAPABILITIES` entry wrong, AND forgets to add a row
+# here gets a green suite anyway: the test has nothing to check it against. Every new
+# capability-gated tool this project adds must get a row here, in the same change that
+# registers it - carried forward into task 11's brief as well.
+_TOOL_TO_GATED_METHOD: dict[str, str] = {
+    # --- Gmail reads ---
+    "search_messages": "search_messages",
+    "get_message": "get_message",
+    "get_thread": "get_thread",
+    "list_threads": "list_threads",
+    "get_attachment": "get_attachment",
+    "list_labels": "list_labels",
+    "list_drafts": "list_drafts",
+    "get_draft": "get_draft",
+    # --- Keeping up (task 13) - whoami calls the identical Backend method as get_profile ---
+    "list_history": "list_history",
+    "get_profile": "get_profile",
+    "whoami": "get_profile",
+    # --- Gmail organising/composing - tool name differs from the Backend method it calls
+    # for three of these (archive_email -> archive_message, trash_email -> trash_message,
+    # untrash_email -> untrash_message; ADR-001's naming lives on the TOOL side only) ---
+    "create_draft": "create_draft",
+    "update_draft": "update_draft",
+    "delete_draft": "delete_draft",
+    "modify_message_labels": "modify_message_labels",
+    "modify_thread_labels": "modify_thread_labels",
+    "archive_email": "archive_message",
+    "archive_thread": "archive_thread",
+    "mark_read": "mark_read",
+    "mark_unread": "mark_unread",
+    "create_label": "create_label",
+    "trash_email": "trash_message",
+    "trash_thread": "trash_thread",
+    "untrash_email": "untrash_message",
+    "untrash_thread": "untrash_thread",
+    "mark_spam": "mark_spam",
+    "unmark_spam": "unmark_spam",
+    # --- Gmail sending - reply/reply_all/forward similarly rename against their Backend
+    # method (reply -> reply_message, reply_all -> reply_all_message, forward ->
+    # forward_message) ---
+    "send_message": "send_message",
+    "send_draft": "send_draft",
+    "reply": "reply_message",
+    "reply_all": "reply_all_message",
+    "forward": "forward_message",
+    # --- Calendar reads (task 12) ---
+    "list_calendars": "list_calendars",
+    "list_events": "list_events",
+    "get_event": "get_event",
+    "find_free_time": "query_freebusy",
+    # --- Calendar writes (task 12) ---
+    "create_event": "create_event",
+    "reschedule_event": "update_event",  # tool name differs from the Backend method it calls
+    "respond_to_event": "respond_to_event",
+    "delete_event": "delete_event",
+}
+
+
+def _tool_names(server) -> set[str]:
+    return {t.name for t in server._tool_manager.list_tools()}
+
+
+def test_every_registered_tool_is_declared():
+    """Fail-closed. A tool that arrives undeclared silently widens what the server claims.
+
+    Built with EVERY capability enabled (`policy.ALL_CAPABILITIES`), not the default policy -
+    task 12 adds `delete_event`, gated `calendar.delete`, which is OFF by default
+    (`policy.DEFAULT_ENABLED`). This pair of tests is about the full universe of tools this
+    SERVER CAN EVER REGISTER against the full universe of what `TOOL_CAPABILITIES` declares,
+    not about what one particular deployment's policy happens to expose right now - the same
+    reasoning `reachable_capabilities()` already uses, below."""
+    server = create_server(backend=None, policy=policy.Policy(frozenset(policy.ALL_CAPABILITIES)))
+    undeclared = _tool_names(server) - set(TOOL_CAPABILITIES)
+    assert not undeclared, f"undeclared tools: {sorted(undeclared)}"
+
+
+def test_every_declaration_corresponds_to_a_real_tool():
+    """The reverse. A declaration with no tool tells a model a capability is reachable when it
+    is not - the bug csa-google-workspace found by having a model read `describe_configuration`
+    and plan work on the strength of it. See `test_every_registered_tool_is_declared` on why
+    this is built with every capability enabled rather than the default policy."""
+    server = create_server(backend=None, policy=policy.Policy(frozenset(policy.ALL_CAPABILITIES)))
+    phantom = set(TOOL_CAPABILITIES) - _tool_names(server)
+    assert not phantom, f"declared but not registered: {sorted(phantom)}"
+
+
+def test_declared_capability_matches_the_backend_gate():
+    """The F1 inconsistency in the sibling project: a hand-written map disagreed with the gate
+    it was supposed to mirror, and the inconsistency propagated into tool descriptions and a
+    demonstration plan. Generic over `_TOOL_TO_GATED_METHOD` rather than a hard-coded pair
+    list, so tasks 11/12 extend the map instead of writing a new test."""
+    for tool_name, method in _TOOL_TO_GATED_METHOD.items():
+        assert TOOL_CAPABILITIES[tool_name] == policy._GATES[method].capability, tool_name
+
+
+def test_every_capability_gated_tool_is_pinned_in_the_map():
+    """FIX 5(a) (final whole-branch review): the OBLIGATION comment above `_TOOL_TO_GATED_METHOD`
+    names its own hole - `test_declared_capability_matches_the_backend_gate` can only check
+    pairs already IN that map, so a capability-gated tool a future task forgets to add there
+    passed silently. Every tool `TOOL_CAPABILITIES` declares gated (a non-`None` capability)
+    must have a row here, checked structurally rather than by trusting the comment."""
+    gated = {name for name, cap in TOOL_CAPABILITIES.items() if cap is not None}
+    missing = gated - set(_TOOL_TO_GATED_METHOD)
+    assert not missing, f"capability-gated tools missing from _TOOL_TO_GATED_METHOD: {sorted(missing)}"
+
+
+@pytest.mark.parametrize("capability", sorted(policy.ALL_CAPABILITIES))
+def test_a_single_enabled_capability_registers_exactly_its_own_tools(capability):
+    """FIX 5(b): the pairwise check above (`test_declared_capability_matches_the_backend_gate`)
+    confirms a tool's DECLARED capability matches its Backend method's gate - it says nothing
+    about whether the tool's own REGISTRATION guard (`policy_obj.allows(...)` in each
+    `_tools/*.py` module) actually gates on that same capability. `find_free_time` guarding on
+    `query_freebusy` (`calendar.read`) is right today and nothing pinned it - a guard that
+    named a DIFFERENT capability by mistake would still pass every other test in this file.
+    Built with exactly ONE capability enabled: a tool registered for the wrong reason shows up
+    as an unexpected extra, and a tool this capability was supposed to unlock but didn't shows
+    up as missing."""
+    server = create_server(backend=None, policy=policy.Policy(frozenset({capability})))
+    names = _tool_names(server)
+    expected = {name for name, cap in TOOL_CAPABILITIES.items()
+               if cap is None or cap == capability}
+    assert names == expected, (capability, sorted(names - expected), sorted(expected - names))
+
+
+def test_no_tool_is_named_delete_email():
+    """ADR-style rule this project states for itself: a tool name is a claim made to a reader
+    who cannot check it. `trash_email`/`untrash_email` exist (task 11); a bare, permanent
+    `delete_email` does not, because Google's own delete is a 3-scope, off-by-default
+    capability (`policy.MAIL_DELETE`) this project has chosen not to name that plainly."""
+    server = create_server(backend=None, policy=policy.Policy())
+    assert "delete_email" not in _tool_names(server)
+
+
+# Tool name -> the `open_world_hint` it must declare. Defaults to `True` (the general rule:
+# every result here is either Google-authored content, or - for `authenticate`/`logout` - a
+# fact that still involves Google's own OAuth endpoint). `auth_status` is the one deliberate
+# `False`: it makes no network call (`test_auth_status_makes_no_network_call` in
+# test_mcp_server_shape.py) and returns only this server's own computed state about a local
+# token file - never Google-authored content. `True` there would not be conservative, it would
+# be inaccurate, and a hint that is uniformly `True` across every tool carries no information at
+# all (fix round 1, task 10 review). An expected-value map, not an exemption list with a skip:
+# a map says what EVERY tool claims, so the next divergence is a visible mismatch rather than a
+# silent extra exemption nobody notices growing.
+_EXPECTED_OPEN_WORLD_HINT: dict[str, bool] = {
+    "auth_status": False,
+    # Task 13's configuration surface: none of the three makes a network call or returns
+    # Google-authored content - same reasoning as `auth_status` above, restated in `_base.py`'s
+    # `LOCAL_READ` and in each tool's own module docstring.
+    "describe_configuration": False,
+    "demonstration_plan": False,
+    "report_a_problem": False,
+}
+
+
+def test_every_tool_declares_the_expected_open_world_hint():
+    server = create_server(backend=None, policy=policy.Policy())
+    for t in server._tool_manager.list_tools():
+        expected = _EXPECTED_OPEN_WORLD_HINT.get(t.name, True)
+        assert t.annotations is not None, t.name
+        assert t.annotations.open_world_hint is expected, t.name
+
+
+def test_disabled_capabilities_still_expose_the_auth_lifecycle_tools():
+    """The auth tools are reachable regardless of `policy.enabled` - a deployment with every
+    mail/calendar capability disabled must still be able to log in, check on, or revoke its own
+    credential (`_capabilities.py`). The general "disabled capability -> absent tool" behaviour
+    itself is exercised where a real capability-gated tool exists to demonstrate it: task 12's
+    `test_delete_event_is_absent_when_calendar_delete_is_off` /
+    `test_delete_event_appears_when_the_capability_is_enabled`."""
+    no_capabilities = policy.Policy(frozenset())
+    names = _tool_names(create_server(backend=None, policy=no_capabilities))
+    assert {"authenticate", "auth_status", "logout"} <= names
+
+
+@pytest.mark.parametrize("capability", sorted(policy.ALL_CAPABILITIES))
+def test_reachable_capabilities_are_a_subset_of_all_capabilities(capability):
+    from csa_google_gmail_calendar.mcp._capabilities import reachable_capabilities
+    assert reachable_capabilities() <= frozenset(policy.ALL_CAPABILITIES)
