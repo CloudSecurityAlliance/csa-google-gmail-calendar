@@ -79,11 +79,9 @@ def _client_id_of(path: str) -> str | None:
     than a bare `json.load`) means a BOM or malformed file is treated the same way here as
     everywhere else that reads one.
     """
-    try:
-        d = auth.read_client_secrets(path)
-    except AuthError:
-        return None
-    return (d.get("installed") or d.get("web") or {}).get("client_id") or None
+    # `_public_identity_fields`, not `read_client_secrets`: the latter returns the whole client
+    # config, which holds `client_secret`, and this value is printed. See that helper's docstring.
+    return auth._public_identity_fields(path).get("client_id")
 
 
 def _token_client_id(token_path: str) -> str | None:

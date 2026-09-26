@@ -630,6 +630,31 @@ def read_client_secrets(path: str) -> dict:
     return config
 
 
+def _public_identity_fields(path: str) -> dict[str, str]:
+    """Only the NON-SECRET identity fields of a client-secrets file: `client_id`, `project_id`.
+
+    A separate read from `read_client_secrets`, deliberately, and the separation is the point.
+    That function returns the whole client config because `from_client_config` needs it — and
+    that config contains `client_secret`. Anything pulled out of it therefore flows, to a taint
+    analyser, from an object holding a secret; CodeQL is field-insensitive here and flagged
+    printing a `client_id` as "logs sensitive data (secret) as clear text" four times over.
+
+    The analyser was not wrong about the structure, only about the field. The answer is to stop
+    routing a label through the credential: this reads the file again and returns only the two
+    values that are public by construction — a `client_id` appears in every consent URL, a
+    `project_id` in every 403 Google returns — so the value that reaches a `print` never passed
+    through the same object as the secret. Suppressing the alert would have left that true of
+    the code and false of the record.
+    """
+    try:
+        with open(os.path.expanduser(path), encoding="utf-8-sig") as handle:
+            body = json.load(handle)
+    except (OSError, ValueError):
+        return {}
+    node = body.get("installed") or body.get("web") or {}
+    return {key: str(node[key]) for key in ("client_id", "project_id") if node.get(key)}
+
+
 def client_project_id(path: str | None) -> str | None:
     """The Google Cloud `project_id` a client-secrets file belongs to, or `None`.
 
@@ -652,12 +677,7 @@ def client_project_id(path: str | None) -> str | None:
     """
     if not path:
         return None
-    try:
-        config = read_client_secrets(path)
-    except AuthError:
-        return None
-    project_id = (config.get("installed") or config.get("web") or {}).get("project_id")
-    return str(project_id) if project_id else None
+    return _public_identity_fields(path).get("project_id")
 
 
 def load_credentials(client_secrets_path: str, token_path: str, required: list[str],
