@@ -18,9 +18,11 @@ It diverges from the source in three deliberate places, each called out where it
    request across everything a capability turns on, and two of the narrowest answers
    (`calendar.events.public.readonly`, `calendar.events.owned`) are useless for how this server
    actually calls Calendar.
-2. `needs_reconsent` generalizes the source's Drive-shaped ".readonly"-suffix trick to
-   `scopes.RANK`, because that trick cannot express Gmail's naming (see the function's own
-   docstring for why).
+2. `needs_reconsent` replaces the source's Drive-shaped ".readonly"-suffix trick, because that
+   trick cannot express Gmail's naming, with a check against `_SUBSUMES`/`_IMPLIES` — a small,
+   hand-declared, transitively-closed table of genuine scope dominance, NOT a `scopes.RANK`
+   comparison (an earlier version of this function used RANK and was wrong; see the function's
+   own docstring for the four pairs that proved it).
 3. `_write_token` writes atomically (temp file + `os.replace`), where the source truncates the
    real file in place. This one is a genuine fix rather than a port choice — the source project
    should get it too; see `_write_token`'s docstring.
@@ -54,18 +56,38 @@ _BASE = "https://www.googleapis.com/auth/"
 # real) calendar; `events.insert`'s is `calendar.events.owned`, which 403s on `respond_to_event`
 # patching an event somebody ELSE organised — exactly the path that method exists for. So the
 # check this map has to satisfy is never equality against the narrowest-scope column: it is
-# that every scope below is ranked in `scopes.RANK`, and ranks AT OR ABOVE the narrowest scope
-# of every Discovery method the owning capability gates. `tests/test_auth.py` asserts the first
-# half (every scope here is a real, ranked scope); the second half was verified by hand against
-# `analysis/operation-inventory.csv` when this map was written and is not re-derived at runtime,
-# because doing so would require loading the Discovery documents into this module.
+# that every scope below is ranked in `scopes.RANK`, and that for every method a capability
+# gates (`policy._GATES`), that method's ACCEPTED scopes (`analysis/operation-inventory.csv`)
+# intersect the scopes the capability actually REQUESTS below. `tests/test_auth.py` asserts the
+# first half (every scope here is a real, ranked scope). The second half USED TO be "verified
+# by hand ... and not re-derived at runtime" - that sentence is why `get_calendar` (fix round 2,
+# item 3) shipped unauthorisable under every capability combination: a hand check done once,
+# silently, is a check that stops being done the next time this map changes. It is now derived,
+# in `tests/test_scope_coverage.py::test_every_gated_method_can_be_authorised_by_its_capability`,
+# which loads the CSV itself rather than the Discovery documents, so "would require loading the
+# Discovery documents into this module" was never actually a reason not to derive it.
 _CAPABILITY_SCOPES: dict[str, tuple[str, ...]] = {
     policy.MAIL_READ:       (f"{_BASE}gmail.readonly",),
     policy.MAIL_WRITE:      (f"{_BASE}gmail.modify",),
-    policy.MAIL_SEND:       (f"{_BASE}gmail.send",),
+    # Fix round 2: `gmail.send` alone cannot authorize `send_draft` (`drafts.send` per
+    # `analysis/operation-inventory.csv` accepts only `mail.google.com`/`gmail.compose`/
+    # `gmail.modify` - never `gmail.send`), so a MAIL_SEND-only deployment offered that tool
+    # and it 403'd on every call. `gmail.compose` is added so the capability that gates
+    # `send_draft` (see `policy._GATES`) also requests a scope that can actually call it.
+    policy.MAIL_SEND:       (f"{_BASE}gmail.send", f"{_BASE}gmail.compose"),
     policy.MAIL_DELETE:     ("https://mail.google.com/",),
+    # Fix round 2: `calendar.calendars.readonly` added - `calendars.get` (`get_calendar`)
+    # accepts only `calendar`/`calendar.app.created`/`calendar.calendars`/
+    # `calendar.calendars.readonly`/`calendar.readonly`, none of which this map previously ever
+    # requested, so `get_calendar` could not be authorised under ANY capability combination.
+    # Found by the derived coverage check in `tests/test_scope_coverage.py`
+    # (`test_every_gated_method_can_be_authorised_by_its_capability`), which intersects every
+    # `policy._GATES` method's accepted-scopes column against what its gating capability
+    # requests and fails naming any method whose intersection is empty - the check the old
+    # hand-verified-once comment on this map could not catch when this map itself was wrong.
     policy.CALENDAR_READ:   (f"{_BASE}calendar.events.readonly",
                              f"{_BASE}calendar.calendarlist.readonly",
+                             f"{_BASE}calendar.calendars.readonly",
                              f"{_BASE}calendar.freebusy"),
     policy.CALENDAR_WRITE:  (f"{_BASE}calendar.events",),
     policy.CALENDAR_DELETE: (f"{_BASE}calendar.events",),
@@ -93,18 +115,27 @@ _CAPABILITY_SCOPES: dict[str, tuple[str, ...]] = {
 # but is not implied by it — free/busy is a distinct, narrower read than the full event body.
 # So the facts below are declared, not inferred, and checked against `scopes.RANK` only as
 # a sanity bound: the dominant scope must genuinely outrank what it dominates, which would
-# catch a typo'd or swapped pair at import time rather than at a consent screen.
+# catch a typo'd or swapped pair at import time rather than at a consent screen. RANK is used
+# for NOTHING ELSE in this module — see the fix-round-2 note on `needs_reconsent` for why a
+# `RANK >=` comparison is exactly the wrong tool for "does A grant everything B does", and why
+# reaching for it a second time in this file was the bug that note fixes.
 #
-# Fix round 2: `https://mail.google.com/` (MAIL_DELETE) is Gmail's full-access scope and
-# strictly contains both `gmail.modify` and `gmail.send` — Google's own consent-screen text for
-# it is "Read, compose, send, and permanently delete all your email from Gmail", which already
-# says everything `gmail.modify`/`gmail.send` would say beside it. Only reachable when
-# MAIL_DELETE is enabled (off by default), but the rule applies there exactly as it does to the
-# other two pairs: a subsumption table with a known, deliberately-unhandled case reads as a gap
-# nobody decided rather than a boundary somebody drew, so it is handled rather than left as a
-# documented exception.
+# `https://mail.google.com/` (MAIL_DELETE) is Gmail's full-access scope and strictly contains
+# both `gmail.modify` and `gmail.send` — Google's own consent-screen text for it is "Read,
+# compose, send, and permanently delete all your email from Gmail", which already says
+# everything `gmail.modify`/`gmail.send` would say beside it. `gmail.modify` in turn dominates
+# `gmail.compose`: every method `analysis/operation-inventory.csv` lists as accepting
+# `gmail.compose` also lists `gmail.modify` (checked for all of them, not assumed), so nothing
+# is reachable with compose that modify cannot also reach.
+#
+# `gmail.send` is declared separately and NOT folded into `gmail.modify`'s entry: Google gives
+# sending its own scope deliberately, and `gmail.modify` does not grant it (confirmed during
+# review) even though a pure "which methods accept this scope" reading of the CSV would suggest
+# otherwise for the one row (`messages.send`) where both appear together — that CSV signal is
+# necessary but not sufficient for dominance, which is exactly why this whole table is hand
+# declared rather than derived from either RANK or the CSV.
 _SUBSUMES: dict[str, tuple[str, ...]] = {
-    f"{_BASE}gmail.modify": (f"{_BASE}gmail.readonly",),
+    f"{_BASE}gmail.modify": (f"{_BASE}gmail.readonly", f"{_BASE}gmail.compose"),
     f"{_BASE}calendar.events": (f"{_BASE}calendar.events.readonly",),
     "https://mail.google.com/": (f"{_BASE}gmail.modify", f"{_BASE}gmail.send"),
 }
@@ -115,6 +146,40 @@ for _dominant, _dominated in _SUBSUMES.items():
 del _dominant, _dominated, _d
 
 
+def _close_subsumption(table: dict[str, tuple[str, ...]]) -> dict[str, frozenset[str]]:
+    """Transitive closure of `table`: for each scope, every scope it dominates directly OR
+    through a chain (`mail.google.com` dominates `gmail.modify`, which dominates
+    `gmail.readonly`, so `mail.google.com` must be recorded as dominating `gmail.readonly` too,
+    even though `_SUBSUMES` never says so directly).
+
+    Fix round 2, item 5: this is what makes both `scopes_for`'s collapse and
+    `needs_reconsent`'s implication check ORDER-INDEPENDENT. The bug this replaces computed
+    `scopes_for`'s collapse by walking `_SUBSUMES.items()` and testing "is the dominant
+    scope STILL in the wanted set" one entry at a time - so if `mail.google.com`'s entry ran
+    before `gmail.modify`'s (dict order, not sorted), it removed `gmail.modify` from `wanted`
+    first, and `gmail.modify`'s own entry then saw its dominant scope already gone and skipped
+    `gmail.readonly` - correct only by accident of insertion order. Computing the full closure
+    ONCE, then testing every present scope against it independently, removes the ordering
+    dependency entirely: which key of `_SUBSUMES` iterates first no longer matters, because
+    each scope's closure already contains everything it transitively dominates.
+    """
+    closure: dict[str, set[str]] = {k: set(v) for k, v in table.items()}
+    changed = True
+    while changed:
+        changed = False
+        for dominated in closure.values():
+            extra: set[str] = set()
+            for d in dominated:
+                extra.update(closure.get(d, ()))
+            if not extra <= dominated:
+                dominated.update(extra)
+                changed = True
+    return {k: frozenset(v) for k, v in closure.items()}
+
+
+_IMPLIES: dict[str, frozenset[str]] = _close_subsumption(_SUBSUMES)
+
+
 def scopes_for(enabled: frozenset[str]) -> list[str]:
     """Spec §4: the scopes the ENABLED capabilities need, nothing more.
 
@@ -122,34 +187,27 @@ def scopes_for(enabled: frozenset[str]) -> list[str]:
     shipping no permanent-delete tool. A client granting the declared set grants more than
     the tools can exercise, and this is the function that stops us doing the same. The
     per-capability union in `_CAPABILITY_SCOPES` can still contain one scope that a broader
-    one already covers (see `_SUBSUMES`); this collapses those before the set reaches a
-    consent screen, request URL, or manifest.
+    one already covers (see `_SUBSUMES`/`_IMPLIES`); this collapses those before the set
+    reaches a consent screen, request URL, or manifest.
+
+    The collapse is order-independent (fix round 2, item 5): every PRESENT scope contributes
+    its own dominated set from `_IMPLIES` to one pooled `dominated` set, which is then
+    subtracted from `wanted` in a single pass — nothing is tested against a set that other
+    entries may have already mutated.
     """
     wanted: set[str] = set()
     for capability in sorted(enabled):
         wanted.update(_CAPABILITY_SCOPES.get(capability, ()))
-    for dominant, dominated in _SUBSUMES.items():
-        if dominant in wanted:
-            wanted.difference_update(dominated)
-    return sorted(wanted)
-
-
-def _scope_family(scope: str) -> str:
-    """Which of scopes.py's two RANK orderings `scope` belongs to. Comparing privilege only
-    makes sense within one api's ordering — a Calendar grant satisfying a Gmail requirement
-    (or vice versa) would be nonsense even if their RANK integers happened to coincide, since
-    each is a separate 0-based sequence over a different API's scopes."""
-    if scope == "https://mail.google.com/":
-        return "gmail"          # top of _GMAIL_ORDER, not a googleapis.com/auth/ URL
-    tail = scope[len(_BASE):] if scope.startswith(_BASE) else scope
-    return tail.split(".", 1)[0]
+    dominated: set[str] = set()
+    for scope in wanted:
+        dominated.update(_IMPLIES.get(scope, ()))
+    return sorted(wanted - dominated)
 
 
 def needs_reconsent(granted: list[str], required: list[str]) -> bool:
-    """A required scope is satisfied by an identical grant, or by a grant that ranks AT LEAST
-    as privileged within the same api family — e.g. a granted `gmail.modify` satisfies a
-    required `gmail.readonly`, and a granted `calendar.events` satisfies a required
-    `calendar.events.readonly`.
+    """A required scope is satisfied by an identical grant, or by a granted scope that
+    `_IMPLIES` it — e.g. a granted `gmail.modify` satisfies a required `gmail.readonly`, and a
+    granted `calendar.events` satisfies a required `calendar.events.readonly`.
 
     PORT NOTE (task 9, see task-9-report.md): the source project (csa-google-workspace)
     detected this by stripping a literal ".readonly" suffix and checking whether the bare
@@ -161,10 +219,28 @@ def needs_reconsent(granted: list[str], required: list[str]) -> bool:
     `gmail.modify` must satisfy a required `gmail.readonly`) fails under a verbatim port. The
     RULE this function encodes is unchanged from the source and is the one task-9-brief.md
     names ("a granted read-write scope satisfies a required read-only one"); only the
-    MECHANISM changes, from string-suffix matching to the privilege lattice `scopes.py`
-    already built for exactly this comparison, restricted to one api family at a time via
-    `_scope_family` so a Calendar grant can never satisfy a Gmail requirement or vice versa.
-    A scope outside `scopes.RANK` (unranked, or one this project simply does not request)
+    MECHANISM changes.
+
+    FIX ROUND 2, ITEM 1/2 (Critical) — that mechanism was, briefly, `scopes.RANK` comparison
+    (`RANK[granted] >= RANK[required]` within one api family), and it was WRONG: RANK is a
+    totalised PARTIAL order (this file's own `_SUBSUMES` comment says so, forty lines above
+    where the bug lived), so "ranks higher" does not mean "grants everything the lower one
+    does". Four pairs proved it fails open on a whole-mailbox bearer credential:
+
+        granted gmail.modify          required gmail.send                     -> wrongly "satisfied"
+        granted calendar.events       required calendar.freebusy              -> wrongly "satisfied"
+        granted calendar.events       required calendar.calendarlist.readonly -> wrongly "satisfied"
+        granted gmail.settings.basic  required gmail.readonly                 -> wrongly "satisfied"
+
+    The first two are the exact pairs `_SUBSUMES` was built to keep separate from `gmail.modify`/
+    `calendar.events` (`gmail.send` and `calendar.freebusy` are each declared as NOT dominated),
+    and the RANK check re-derived the wrong answer from the same rank integers `_SUBSUMES`
+    exists to override. `tests/test_auth.py` parametrizes over all four pairs (and the genuine
+    implications, including the transitive `mail.google.com` ⟹ `gmail.readonly`) so this cannot
+    regress silently again. RANK is not used here any more, at all — it is reserved for what
+    `_SUBSUMES`'s own sanity-bound assertion already uses it for (import-time: a declared
+    dominant scope must outrank what it dominates), never for a live credential-sufficiency
+    decision. A scope outside `_IMPLIES` (unranked, or one this project simply does not request)
     cannot be reasoned about this way and always falls through to "needs reconsent" — the
     conservative direction.
     """
@@ -172,12 +248,8 @@ def needs_reconsent(granted: list[str], required: list[str]) -> bool:
     for scope in required:
         if scope in granted_set:
             continue
-        if scope in scopes.RANK and any(
-            g in scopes.RANK and _scope_family(g) == _scope_family(scope)
-            and scopes.RANK[g] >= scopes.RANK[scope]
-            for g in granted_set
-        ):
-            continue  # a granted scope at or above this one in the same api's lattice
+        if any(scope in _IMPLIES.get(g, ()) for g in granted_set):
+            continue  # a granted scope that DECLARED-dominates this one (see `_SUBSUMES`)
         return True
     return False
 
@@ -438,6 +510,19 @@ def _write_token(token_path: str, creds: Credentials) -> None:
     file or the whole new one, never a partial write. "Same directory" is what keeps this a
     same-filesystem rename; some runtimes silently fall back to copy-then-delete across a mount
     boundary, which would reopen exactly the race being closed here.
+
+    A silent change worth stating rather than leaving implicit: the OLD direct-write path
+    passed `O_NOFOLLOW` to refuse writing through a symlink at `token_path` (see
+    `_refuse_symlink`'s docstring for why POSIX still needed that as well). This path drops it,
+    on purpose, because it is no longer the operation doing the writing. `mkstemp` creates a
+    brand-new file under a random name with `O_EXCL`, so there is nothing at that name for a
+    symlink to have been swapped in for; `os.replace` then retargets the directory entry at
+    `token_path` atomically without ever dereferencing whatever is currently there, symlink or
+    not. Both properties together are a STRICTLY SAFER guarantee than `O_NOFOLLOW` on a direct
+    open ever was — that flag only refused a symlink it happened to see at open time, which
+    was still racy by construction (see `_refuse_symlink`). `_refuse_symlink(token_path)` is
+    still called just below, but now as an early, friendlier error for the common case, not as
+    the mechanism the safety property depends on.
     """
     token_dir = os.path.dirname(token_path) or "."
     if token_dir != "." and not os.path.isdir(token_dir):

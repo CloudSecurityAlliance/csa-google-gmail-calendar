@@ -50,20 +50,32 @@ IRREVERSIBLE: frozenset[str] = frozenset({MAIL_SEND, MAIL_DELETE, CALENDAR_DELET
 
 
 class Gate:
-    """What a Backend method costs. `capability=None` is a read, decided rather than absent."""
+    """What a Backend method costs. `capability=None` names a method this project has decided
+    needs no capability check at all (nothing currently uses it - see the fix-round-2 note on
+    `_GATES` below for why every read is gated by name instead)."""
     __slots__ = ("capability",)
 
     def __init__(self, capability: str | None) -> None:
         self.capability = capability
 
 
-_R = Gate(None)
-
+# Fix round 2 (auth.py task-9-report.md): reads used to be `Gate(None)` - allowed regardless of
+# which capabilities were enabled, on the theory that a read is inherently low-risk. That
+# stopped being true the moment `auth.scopes_for` started tying an actual OAuth SCOPE to
+# MAIL_READ/CALENDAR_READ: `CSA_GGC_CAPABILITIES=mail.send` (excluding `mail.read`) advertised
+# every mail-read tool at the policy layer while consenting to none of the scopes those tools
+# need, so a call that "policy allows" reached Google and 403'd anyway - a worse failure than a
+# clean, actionable `PolicyError` naming the capability to enable. Gating every read by its own
+# capability closes that gap and costs nothing in the default deployment: `MAIL_READ` and
+# `CALENDAR_READ` are both in `DEFAULT_ENABLED`, so nobody who has not deliberately narrowed
+# their capability set sees any change in behaviour.
 _GATES: dict[str, Gate] = {
     # --- mail reads ---
-    "search_messages": _R, "get_message": _R, "get_thread": _R, "list_threads": _R,
-    "get_attachment": _R, "list_labels": _R, "list_drafts": _R, "get_draft": _R,
-    "list_history": _R, "get_profile": _R,
+    "search_messages": Gate(MAIL_READ), "get_message": Gate(MAIL_READ),
+    "get_thread": Gate(MAIL_READ), "list_threads": Gate(MAIL_READ),
+    "get_attachment": Gate(MAIL_READ), "list_labels": Gate(MAIL_READ),
+    "list_drafts": Gate(MAIL_READ), "get_draft": Gate(MAIL_READ),
+    "list_history": Gate(MAIL_READ), "get_profile": Gate(MAIL_READ),
     # --- mail reversible writes ---
     "create_draft": Gate(MAIL_WRITE), "update_draft": Gate(MAIL_WRITE),
     # DEVIATION from the brief and from spec §3's own table (which puts this behind
@@ -96,8 +108,9 @@ _GATES: dict[str, Gate] = {
     "reply_message": Gate(MAIL_SEND), "reply_all_message": Gate(MAIL_SEND),
     "forward_message": Gate(MAIL_SEND),
     # --- calendar ---
-    "list_calendars": _R, "get_calendar": _R, "list_events": _R, "get_event": _R,
-    "query_freebusy": _R,
+    "list_calendars": Gate(CALENDAR_READ), "get_calendar": Gate(CALENDAR_READ),
+    "list_events": Gate(CALENDAR_READ), "get_event": Gate(CALENDAR_READ),
+    "query_freebusy": Gate(CALENDAR_READ),
     "create_event": Gate(CALENDAR_WRITE), "update_event": Gate(CALENDAR_WRITE),
     "respond_to_event": Gate(CALENDAR_WRITE),
     "delete_event": Gate(CALENDAR_DELETE),

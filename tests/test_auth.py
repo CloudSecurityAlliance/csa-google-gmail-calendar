@@ -22,10 +22,14 @@ def test_read_only_capabilities_request_read_only_scopes():
     assert f"{B}gmail.modify" not in got, "spec §4: request what the capabilities need, no more"
 
 
-def test_enabling_send_adds_exactly_the_send_scope():
+def test_enabling_send_adds_the_send_and_compose_scopes():
+    """Fix round 2: MAIL_SEND also requests gmail.compose, because drafts.send (send_draft's
+    real Google endpoint) does not accept gmail.send at all - only compose/modify/full access
+    do. Both survive here since gmail.modify (which would otherwise collapse compose away)
+    is not enabled in this capability set."""
     base = set(auth.scopes_for(frozenset({policy.MAIL_READ})))
     with_send = set(auth.scopes_for(frozenset({policy.MAIL_READ, policy.MAIL_SEND})))
-    assert with_send - base == {f"{B}gmail.send"}
+    assert with_send - base == {f"{B}gmail.send", f"{B}gmail.compose"}
 
 
 def test_mail_write_needs_modify_and_says_so_only_when_enabled():
@@ -40,12 +44,15 @@ def test_full_mailbox_scope_is_never_requested_without_mail_delete():
 
 def test_the_consent_screen_for_mail_read_and_calendar_read_offers_no_write_access():
     """Sanity check on what a real consent screen shows: MAIL_READ + CALENDAR_READ alone must
-    produce exactly the read-only scope strings below, and nothing that could modify anything."""
+    produce exactly the read-only scope strings below, and nothing that could modify anything.
+    calendar.calendars.readonly (fix round 2 - needed to authorise get_calendar at all) is a
+    read scope like the other three, so it belongs here too."""
     got = set(auth.scopes_for(frozenset({policy.MAIL_READ, policy.CALENDAR_READ})))
     assert got == {
         f"{B}gmail.readonly",
         f"{B}calendar.events.readonly",
         f"{B}calendar.calendarlist.readonly",
+        f"{B}calendar.calendars.readonly",
         f"{B}calendar.freebusy",
     }
 
@@ -76,11 +83,13 @@ def test_unknown_capability_is_silently_ignored_by_scopes_for():
 # --- Fix round 1, item 1: redundant scopes must be collapsed --------------------------------
 
 def test_default_posture_collapses_subsumed_readonly_scopes():
-    """gmail.modify subsumes gmail.readonly; calendar.events subsumes calendar.events.readonly.
-    Requesting both is the over-declaration spec §4 criticises the official servers for, done
-    in miniature - it must not appear on the consent screen the default posture shows."""
+    """gmail.modify subsumes gmail.readonly AND gmail.compose (MAIL_SEND's fix-round-2
+    addition); calendar.events subsumes calendar.events.readonly. Requesting the dominated
+    scopes too is the over-declaration spec §4 criticises the official servers for, done in
+    miniature - none of them may appear on the consent screen the default posture shows."""
     assert auth.scopes_for(policy.DEFAULT_ENABLED) == [
         f"{B}calendar.calendarlist.readonly",
+        f"{B}calendar.calendars.readonly",
         f"{B}calendar.events",
         f"{B}calendar.freebusy",
         f"{B}gmail.modify",
@@ -89,10 +98,11 @@ def test_default_posture_collapses_subsumed_readonly_scopes():
 
 
 def test_read_only_posture_has_nothing_to_collapse():
-    """No write scope is present, so both readonly scopes stay - the exact set from the two
+    """No write scope is present, so every read scope stays - the exact set from the two
     tests above, restated here as one assertion covering the whole list."""
     assert auth.scopes_for(frozenset({policy.MAIL_READ, policy.CALENDAR_READ})) == [
         f"{B}calendar.calendarlist.readonly",
+        f"{B}calendar.calendars.readonly",
         f"{B}calendar.events.readonly",
         f"{B}calendar.freebusy",
         f"{B}gmail.readonly",
@@ -104,11 +114,12 @@ def test_everything_posture_exact_scope_list():
     contributes the same calendar.events already present via CALENDAR_WRITE, so nothing new).
     mail.google.com is Gmail's full-access scope - Google's own consent-screen text for it is
     "Read, compose, send, and permanently delete all your email from Gmail" - and strictly
-    contains both gmail.modify and gmail.send, so both collapse away here. Four scopes, not
-    six."""
+    contains gmail.modify and gmail.send (and, transitively through modify, gmail.readonly and
+    gmail.compose), so all four collapse away here."""
     assert auth.scopes_for(frozenset(policy.ALL_CAPABILITIES)) == [
         "https://mail.google.com/",
         f"{B}calendar.calendarlist.readonly",
+        f"{B}calendar.calendars.readonly",
         f"{B}calendar.events",
         f"{B}calendar.freebusy",
     ]
@@ -116,9 +127,15 @@ def test_everything_posture_exact_scope_list():
 
 def test_gmail_send_is_absent_from_the_everything_set():
     """The assertion that would fail if someone later decided mail.google.com should NOT
-    dominate gmail.send: it must not appear beside the scope that already grants it."""
-    assert f"{B}gmail.send" not in auth.scopes_for(frozenset(policy.ALL_CAPABILITIES))
-    assert f"{B}gmail.modify" not in auth.scopes_for(frozenset(policy.ALL_CAPABILITIES))
+    dominate gmail.send: it must not appear beside the scope that already grants it. Also
+    covers the two scopes mail.google.com dominates only TRANSITIVELY, through gmail.modify
+    (gmail.readonly, gmail.compose) - the case fix round 2 item 5's order-independent closure
+    exists to get right regardless of _SUBSUMES's dict order."""
+    got = auth.scopes_for(frozenset(policy.ALL_CAPABILITIES))
+    assert f"{B}gmail.send" not in got
+    assert f"{B}gmail.modify" not in got
+    assert f"{B}gmail.readonly" not in got
+    assert f"{B}gmail.compose" not in got
 
 
 def test_gmail_send_survives_a_naive_rank_only_collapse():
@@ -148,6 +165,38 @@ def test_subsumes_table_is_internally_consistent_with_rank():
             assert scopes.RANK[dominant] > scopes.RANK[d]
 
 
+def test_collapse_closure_is_independent_of_subsumes_dict_order():
+    """Fix round 2, item 5. The bug: `scopes_for` used to walk `_SUBSUMES.items()` and test
+    "is the dominant scope STILL present" one entry at a time, so if mail.google.com's entry
+    happened to run before gmail.modify's, it removed gmail.modify from the wanted set first -
+    and gmail.modify's own entry then found its dominant scope already gone and skipped
+    removing gmail.readonly, which should have been dropped too (mail.google.com dominates it
+    TRANSITIVELY, through gmail.modify). Shuffling the table's insertion order must not change
+    the closure `_close_subsumption` computes from it."""
+    forward = auth._close_subsumption(auth._SUBSUMES)
+    reversed_table = dict(reversed(list(auth._SUBSUMES.items())))
+    assert auth._close_subsumption(reversed_table) == forward
+    # And the transitive fact itself must actually be there, not just order-stable:
+    assert f"{B}gmail.readonly" in forward["https://mail.google.com/"]
+    assert f"{B}gmail.compose" in forward["https://mail.google.com/"]
+
+
+def test_scopes_for_collapse_is_independent_of_subsumes_dict_order(monkeypatch):
+    """The integration-level counterpart: patch in a shuffled _SUBSUMES/_IMPLIES and confirm
+    scopes_for(ALL_CAPABILITIES) is unchanged - this is the exact scenario (mail.google.com +
+    gmail.modify both present) the ordering bug required to manifest."""
+    shuffled = dict(reversed(list(auth._SUBSUMES.items())))
+    monkeypatch.setattr(auth, "_SUBSUMES", shuffled)
+    monkeypatch.setattr(auth, "_IMPLIES", auth._close_subsumption(shuffled))
+    assert auth.scopes_for(frozenset(policy.ALL_CAPABILITIES)) == [
+        "https://mail.google.com/",
+        f"{B}calendar.calendarlist.readonly",
+        f"{B}calendar.calendars.readonly",
+        f"{B}calendar.events",
+        f"{B}calendar.freebusy",
+    ]
+
+
 # --- needs_reconsent -----------------------------------------------------------------------
 
 def test_a_granted_write_scope_satisfies_a_required_read_scope():
@@ -158,9 +207,56 @@ def test_a_missing_scope_needs_reconsent():
     assert auth.needs_reconsent([f"{B}gmail.readonly"], [f"{B}gmail.send"])
 
 
-def test_needs_reconsent_false_when_all_present():
+def test_needs_reconsent_false_when_granted_equals_required():
+    """A trivial, identity-only check - true of ANY correct implementation, but also true of
+    a bare `return False`, so it proves nothing about the subsumption logic on its own. The
+    real coverage for that logic is the two parametrized tests below; this one stays as a
+    basic sanity check that a fully-granted set is never told to re-consent."""
     required = auth.scopes_for(policy.DEFAULT_ENABLED)
     assert auth.needs_reconsent(granted=required, required=required) is False
+
+
+# Fix round 2, items 1/2 (Critical): needs_reconsent's RANK-based mechanism failed OPEN - it
+# answered "satisfied" for a granted/required pair where the granted scope does not actually
+# grant the required one, on a whole-mailbox bearer-credential sufficiency check. These four
+# pairs are exactly what proved it: each ranks the granted scope higher than the required one
+# in scopes.RANK, without the granted scope actually including the required one.
+_RANK_ONLY_WOULD_WRONGLY_SATISFY = [
+    pytest.param(f"{B}gmail.modify", f"{B}gmail.send", id="modify-does-not-imply-send"),
+    pytest.param(f"{B}calendar.events", f"{B}calendar.freebusy",
+                id="events-does-not-imply-freebusy"),
+    pytest.param(f"{B}calendar.events", f"{B}calendar.calendarlist.readonly",
+                id="events-does-not-imply-calendarlist"),
+    pytest.param(f"{B}gmail.settings.basic", f"{B}gmail.readonly",
+                id="settings-basic-does-not-imply-readonly"),
+]
+
+
+@pytest.mark.parametrize("granted_scope,required_scope", _RANK_ONLY_WOULD_WRONGLY_SATISFY)
+def test_needs_reconsent_true_for_pairs_a_rank_only_check_would_wrongly_satisfy(
+        granted_scope, required_scope):
+    """The orientation that exposes the bug: swap the granted/required scopes from
+    test_a_missing_scope_needs_reconsent (which happens to land on the one orientation - lower
+    rank granted, higher rank required - where a broken rank>= check gives the right answer by
+    accident) and it must still say re-consent is needed."""
+    assert auth.needs_reconsent([granted_scope], [required_scope]) is True
+
+
+_GENUINE_IMPLICATIONS = [
+    pytest.param(f"{B}gmail.modify", f"{B}gmail.readonly", id="modify-implies-readonly"),
+    pytest.param(f"{B}gmail.modify", f"{B}gmail.compose", id="modify-implies-compose"),
+    pytest.param(f"{B}calendar.events", f"{B}calendar.events.readonly",
+                id="events-implies-events-readonly"),
+    pytest.param("https://mail.google.com/", f"{B}gmail.modify", id="full-implies-modify"),
+    pytest.param("https://mail.google.com/", f"{B}gmail.send", id="full-implies-send"),
+    pytest.param("https://mail.google.com/", f"{B}gmail.readonly",
+                id="full-implies-readonly-transitively-through-modify"),
+]
+
+
+@pytest.mark.parametrize("granted_scope,required_scope", _GENUINE_IMPLICATIONS)
+def test_needs_reconsent_false_for_genuine_implications(granted_scope, required_scope):
+    assert auth.needs_reconsent([granted_scope], [required_scope]) is False
 
 
 # --- _read_cached / load_cached_credentials: error shape --------------------------------
@@ -458,7 +554,11 @@ def test_preexisting_token_dir_is_not_mutated_as_a_side_effect(tmp_path):
 
 # --- token_path_default ----------------------------------------------------------------------
 
-def test_token_path_default_expands_home_and_has_no_env_override():
+def test_token_path_default_expands_home_when_env_var_is_unset(monkeypatch):
+    """Named and written to be true regardless of the actual environment this test runs in:
+    without the delenv, anyone with CSA_GGC_TOKEN_PATH set in their own shell would see this
+    test fail on an assertion the test's own name claims doesn't apply to them."""
+    monkeypatch.delenv("CSA_GGC_TOKEN_PATH", raising=False)
     path = auth.token_path_default()
     assert path == os.path.expanduser("~/.csa_google_gmail_calendar/token.json")
     assert not path.startswith("~")
