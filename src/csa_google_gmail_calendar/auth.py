@@ -5,18 +5,25 @@ audited OAuth implementation for the same provider — the cached-token reading,
 detection, and token-file hardening below are that project's, carried across with the
 reasoning that produced them intact.
 
-It diverges from the source in exactly one place, and the divergence is deliberate rather
-than a drift: `scopes_for` takes the `enabled` capability set this server derives from
-`policy.py`, not a `read_only: bool`. The sibling project's `CSA_GW_READ_ONLY` posture flag
-and its `has_write_scope` / dual-cache-file machinery are dropped entirely — this project
-already has a finer-grained mechanism (the capability set) that supersedes a single on/off
-flag, and `policy.PolicyBackend` is what refuses a call the granted OAuth scopes would
-technically still allow. See carry-forward-task-9.md for why `_CAPABILITY_SCOPES` requests
-more than `scopes.narrowest()` would compute for some methods: the narrowest listed scope for
-a Discovery method is what the API accepts for THAT method alone, not what this server should
-request across everything a capability turns on, and two of the narrowest answers
-(`calendar.events.public.readonly`, `calendar.events.owned`) are useless for how this server
-actually calls Calendar.
+It diverges from the source in three deliberate places, each called out where it happens:
+
+1. `scopes_for` takes the `enabled` capability set this server derives from `policy.py`, not a
+   `read_only: bool`. The sibling project's `CSA_GW_READ_ONLY` posture flag and its
+   `has_write_scope` / dual-cache-file machinery are dropped entirely — this project already
+   has a finer-grained mechanism (the capability set) that supersedes a single on/off flag, and
+   `policy.PolicyBackend` is what refuses a call the granted OAuth scopes would technically
+   still allow. See carry-forward-task-9.md for why `_CAPABILITY_SCOPES` requests more than
+   `scopes.narrowest()` would compute for some methods: the narrowest listed scope for a
+   Discovery method is what the API accepts for THAT method alone, not what this server should
+   request across everything a capability turns on, and two of the narrowest answers
+   (`calendar.events.public.readonly`, `calendar.events.owned`) are useless for how this server
+   actually calls Calendar.
+2. `needs_reconsent` generalizes the source's Drive-shaped ".readonly"-suffix trick to
+   `scopes.RANK`, because that trick cannot express Gmail's naming (see the function's own
+   docstring for why).
+3. `_write_token` writes atomically (temp file + `os.replace`), where the source truncates the
+   real file in place. This one is a genuine fix rather than a port choice — the source project
+   should get it too; see `_write_token`'s docstring.
 """
 from __future__ import annotations
 
@@ -25,6 +32,7 @@ import json
 import os
 import subprocess  # nosec B404 - icacls only, fixed argv, no shell; see `_harden`
 import sys
+import tempfile
 
 from google.auth.exceptions import GoogleAuthError
 from google.auth.transport.requests import Request
@@ -64,16 +72,55 @@ _CAPABILITY_SCOPES: dict[str, tuple[str, ...]] = {
 }
 
 
+# Fix round 1, item 1: two capabilities can each contribute a scope where one is a strict
+# superset of the other — MAIL_READ's `gmail.readonly` is wholly contained in MAIL_WRITE's
+# `gmail.modify` ("the whole mailbox, short of permanent delete" — scopes.py's own comment on
+# it); CALENDAR_READ's `calendar.events.readonly` is wholly contained in CALENDAR_WRITE's/
+# CALENDAR_DELETE's `calendar.events`. Requesting both grants nothing the broader one doesn't
+# already grant, and it shows up on the one screen a user actually reads: the OAuth consent
+# screen lists every scope requested, so a redundant entry is a second line asking for
+# something the enabled capabilities do not need — exactly the over-declaration spec §4
+# criticises both official Google servers for, done in miniature.
+#
+# This is deliberately NOT derived from `scopes.RANK` alone. `scopes.py`'s own docstring warns
+# that RANK is a totalisation of only a PARTIAL order — it exists so `narrowest()` can pick
+# among OR-alternative candidates for one Discovery method, not to answer "does A grant
+# everything B does" for two arbitrary ranked scopes. `gmail.send` sits between
+# `gmail.readonly` and `gmail.modify` in RANK, but Google gives sending its own scope
+# deliberately: `gmail.modify` does NOT include it, so a rank-order collapse ("drop anything
+# ranked below the highest scope present") would incorrectly drop `gmail.send` whenever
+# `gmail.modify` is also requested. Likewise `calendar.freebusy` ranks below `calendar.events`
+# but is not implied by it — free/busy is a distinct, narrower read than the full event body.
+# So the two facts below are declared, not inferred, and checked against `scopes.RANK` only as
+# a sanity bound: the dominant scope must genuinely outrank what it dominates, which would
+# catch a typo'd or swapped pair at import time rather than at a consent screen.
+_SUBSUMES: dict[str, tuple[str, ...]] = {
+    f"{_BASE}gmail.modify": (f"{_BASE}gmail.readonly",),
+    f"{_BASE}calendar.events": (f"{_BASE}calendar.events.readonly",),
+}
+for _dominant, _dominated in _SUBSUMES.items():
+    for _d in _dominated:
+        assert scopes.RANK[_dominant] > scopes.RANK[_d], (
+            f"{_dominant!r} must outrank {_d!r} in scopes.RANK to be declared as subsuming it")
+del _dominant, _dominated, _d
+
+
 def scopes_for(enabled: frozenset[str]) -> list[str]:
     """Spec §4: the scopes the ENABLED capabilities need, nothing more.
 
     Both official servers over-declare — Gmail advertises the full-mailbox scope while
     shipping no permanent-delete tool. A client granting the declared set grants more than
-    the tools can exercise, and this is the function that stops us doing the same.
+    the tools can exercise, and this is the function that stops us doing the same. The
+    per-capability union in `_CAPABILITY_SCOPES` can still contain one scope that a broader
+    one already covers (see `_SUBSUMES`); this collapses those before the set reaches a
+    consent screen, request URL, or manifest.
     """
     wanted: set[str] = set()
     for capability in sorted(enabled):
         wanted.update(_CAPABILITY_SCOPES.get(capability, ()))
+    for dominant, dominated in _SUBSUMES.items():
+        if dominant in wanted:
+            wanted.difference_update(dominated)
     return sorted(wanted)
 
 
@@ -182,7 +229,16 @@ def _refresh(creds: Credentials) -> None:
     try:
         creds.refresh(Request())
     except (ValueError, GoogleAuthError) as e:
-        raise AuthError("could not refresh cached credentials") from e
+        # Fix round 1, item 3: a revoked or expired refresh token is the single most common
+        # way a working setup stops working (the user revoked app access, an admin action, a
+        # password change), and the remedy is the same regardless of which of those it was:
+        # authenticate again. Say so, rather than leaving the caller with only "could not
+        # refresh" and no next step. Still generic and still doesn't interpolate `e` - the
+        # remedy costs nothing to state and carries no token material, unlike the cause would.
+        raise AuthError(
+            "could not refresh cached credentials - the refresh token is expired or was "
+            "revoked. Re-authenticate: run this package's interactive OAuth login "
+            "(auth.load_credentials) again to obtain a new token.") from e
 
 
 _WINDOWS = os.name == "nt"
@@ -353,18 +409,43 @@ def _refuse_symlink(path: str) -> None:
 
 
 def _write_token(token_path: str, creds: Credentials) -> None:
-    token_dir = os.path.dirname(token_path)
-    if token_dir and not os.path.isdir(token_dir):
+    """Write the token cache, atomically.
+
+    Fix round 1, item 2 — DIVERGES from `csa-google-workspace` and should be backported there.
+    The source project opens `token_path` directly with `O_TRUNC`, which is not atomic: a
+    second process reading the same file mid-write (two MCP clients configured to share one
+    token path, an ordinary setup rather than a hypothetical one, with one of them refreshing)
+    can observe a partially written file — valid up to wherever the writer had reached, then
+    truncated — and see a corrupt-token `AuthError` for a credential that is actually fine one
+    write later. The token is a bearer credential for an entire mailbox, so that race is worth
+    closing here even though it was inherited rather than introduced by this port.
+
+    The fix: write the new content to a temp file IN THE SAME DIRECTORY, harden it before any
+    content lands in it (same rule as before — the restrictive mode has to be in place at
+    creation, not fixed up afterward), then `os.replace()` it onto `token_path`. `os.replace` is
+    a single filesystem rename — POSIX `rename(2)`, Windows `MoveFileEx` with
+    `MOVEFILE_REPLACE_EXISTING` — both atomic, so a concurrent reader sees either the whole old
+    file or the whole new one, never a partial write. "Same directory" is what keeps this a
+    same-filesystem rename; some runtimes silently fall back to copy-then-delete across a mount
+    boundary, which would reopen exactly the race being closed here.
+    """
+    token_dir = os.path.dirname(token_path) or "."
+    if token_dir != "." and not os.path.isdir(token_dir):
         os.makedirs(token_dir, exist_ok=True)
         _harden(token_dir)              # only harden a dir we created; don't mutate a caller's (#4)
-    _refuse_symlink(token_path)
-    # O_NOFOLLOW refuses a symlink at token_path (symlink/TOCTOU attack); the post-open harden
-    # enforces owner-only even when the file already existed, since O_TRUNC keeps a file's prior
-    # permissions (#17). Both are POSIX-only mechanisms; see `_harden` and `_refuse_symlink`.
-    fd = os.open(token_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0), 0o600)
-    with os.fdopen(fd, "w") as f:
-        _harden(token_path, fd)
-        f.write(creds.to_json())
+    _refuse_symlink(token_path)          # refuse to replace a pre-existing symlink at this name
+    fd, tmp_path = tempfile.mkstemp(dir=token_dir, prefix=".token-", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as f:
+            _harden(tmp_path, fd)       # restrictive mode enforced before content is written
+            f.write(creds.to_json())
+        os.replace(tmp_path, token_path)   # atomic swap; never a reader-visible partial write
+    except BaseException:
+        try:
+            os.remove(tmp_path)          # the swap never happened; don't leave the temp behind
+        except OSError:
+            pass
+        raise
 
 
 # Where a client-secrets file comes from, said once. Every failure below ends with this,

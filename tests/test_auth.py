@@ -73,6 +73,75 @@ def test_unknown_capability_is_silently_ignored_by_scopes_for():
     assert auth.scopes_for(frozenset({"not-a-real-capability"})) == []
 
 
+# --- Fix round 1, item 1: redundant scopes must be collapsed --------------------------------
+
+def test_default_posture_collapses_subsumed_readonly_scopes():
+    """gmail.modify subsumes gmail.readonly; calendar.events subsumes calendar.events.readonly.
+    Requesting both is the over-declaration spec §4 criticises the official servers for, done
+    in miniature - it must not appear on the consent screen the default posture shows."""
+    assert auth.scopes_for(policy.DEFAULT_ENABLED) == [
+        f"{B}calendar.calendarlist.readonly",
+        f"{B}calendar.events",
+        f"{B}calendar.freebusy",
+        f"{B}gmail.modify",
+        f"{B}gmail.send",
+    ]
+
+
+def test_read_only_posture_has_nothing_to_collapse():
+    """No write scope is present, so both readonly scopes stay - the exact set from the two
+    tests above, restated here as one assertion covering the whole list."""
+    assert auth.scopes_for(frozenset({policy.MAIL_READ, policy.CALENDAR_READ})) == [
+        f"{B}calendar.calendarlist.readonly",
+        f"{B}calendar.events.readonly",
+        f"{B}calendar.freebusy",
+        f"{B}gmail.readonly",
+    ]
+
+
+def test_everything_posture_exact_scope_list():
+    """ALL_CAPABILITIES adds MAIL_DELETE (bare mail.google.com) and CALENDAR_DELETE (which
+    contributes the same calendar.events already present via CALENDAR_WRITE, so nothing new).
+    mail.google.com is documented as "everything" but is left UNCOLLAPSED against gmail.modify/
+    gmail.send here - that further collapse is a separate judgment call flagged in
+    task-9-report.md, not assumed silently, so this test pins today's actual behaviour."""
+    assert auth.scopes_for(frozenset(policy.ALL_CAPABILITIES)) == [
+        "https://mail.google.com/",
+        f"{B}calendar.calendarlist.readonly",
+        f"{B}calendar.events",
+        f"{B}calendar.freebusy",
+        f"{B}gmail.modify",
+        f"{B}gmail.send",
+    ]
+
+
+def test_gmail_send_survives_a_naive_rank_only_collapse():
+    """The case a rank-order-only collapse would break: gmail.send (RANK 3) sits BELOW
+    gmail.modify (RANK 8) in scopes.RANK, but Google gives sending its own scope deliberately -
+    gmail.modify does not include it. It must survive when both are requested together."""
+    got = auth.scopes_for(frozenset({policy.MAIL_WRITE, policy.MAIL_SEND}))
+    assert f"{B}gmail.send" in got
+    assert f"{B}gmail.modify" in got
+
+
+def test_calendar_freebusy_survives_alongside_calendar_events():
+    """The Calendar analogue of the gmail.send case: calendar.freebusy (RANK 2) sits below
+    calendar.events (RANK 11) but is not implied by it - free/busy is a distinct, narrower
+    read than the full event body."""
+    got = auth.scopes_for(frozenset({policy.CALENDAR_READ, policy.CALENDAR_WRITE}))
+    assert f"{B}calendar.freebusy" in got
+    assert f"{B}calendar.events" in got
+    assert f"{B}calendar.events.readonly" not in got     # this one IS subsumed
+
+
+def test_subsumes_table_is_internally_consistent_with_rank():
+    for dominant, dominated in auth._SUBSUMES.items():
+        assert dominant in scopes.RANK
+        for d in dominated:
+            assert d in scopes.RANK
+            assert scopes.RANK[dominant] > scopes.RANK[d]
+
+
 # --- needs_reconsent -----------------------------------------------------------------------
 
 def test_a_granted_write_scope_satisfies_a_required_read_scope():
@@ -251,6 +320,23 @@ def test_revoked_refresh_token_surfaces_as_auth_error_not_a_raw_google_exception
     assert not isinstance(ei.value, GoogleAuthError)
 
 
+def test_refresh_failure_tells_the_user_to_re_authenticate(tmp_path, monkeypatch):
+    """Fix round 1, item 3. 'could not refresh' alone leaves the caller with no next step, and
+    the remedy is always the same regardless of why Google refused - name it, without ever
+    interpolating the underlying exception (which may carry an echoed request body)."""
+    token = tmp_path / "token.json"
+    token.write_text("{}")
+    revoked_message = "invalid_grant: Token has been expired or revoked."
+    _patch_from_file(monkeypatch, RaisingCreds())
+    monkeypatch.setattr(auth, "Request", lambda: None)
+    monkeypatch.setattr(auth.InstalledAppFlow, "from_client_config", _no_flow)
+
+    with pytest.raises(AuthError, match="[Rr]e-authenticate") as ei:
+        auth.load_cached_credentials(str(token), _required())
+    assert revoked_message not in str(ei.value)      # cause not interpolated into the message
+    assert ei.value.__cause__ is not None            # but preserved via `from e`
+
+
 def test_insufficient_scopes_forces_reconsent_on_the_interactive_path(tmp_path, monkeypatch):
     token = tmp_path / "token.json"
     token.write_text("{}")
@@ -276,11 +362,12 @@ def test_written_token_and_dir_are_owner_only(tmp_path, monkeypatch):
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX mode bits; Windows path covered separately")
 def test_a_preexisting_looser_mode_is_hardened_before_content_is_written(tmp_path):
-    """#17: O_TRUNC keeps a pre-existing file's mode, so the fix has to happen at open time,
-    not as a follow-up chmod after the fact — a file created 0644 and chmod'd to 0600
-    afterwards is world-readable for the moment in between. `_write_token` calls `_harden`
-    on the fd immediately after `os.open`, before `f.write(...)` runs, so no readable window
-    exists on POSIX regardless of the file's prior mode."""
+    """A file created 0644 and chmod'd to 0600 afterwards is world-readable for the moment in
+    between. Under the atomic-replace design (fix round 1, item 2) the mode of the OLD file at
+    `token_path` is irrelevant: the new content is written into a freshly created, separately
+    hardened temp file, and only a completed, correctly-permissioned file is ever swapped onto
+    `token_path` via `os.replace`. So the final file is 0600 not because something chmod'd the
+    old one, but because the replacement was born correctly-permissioned."""
     token = tmp_path / "token.json"
     token.write_text("old-content-that-must-not-survive")
     token.chmod(0o644)                                     # pre-existing, world-readable
@@ -289,6 +376,54 @@ def test_a_preexisting_looser_mode_is_hardened_before_content_is_written(tmp_pat
 
     assert auth.file_is_owner_only(str(token)) is True
     assert token.read_text() == '{"token": "fake"}'
+
+
+# --- Fix round 1, item 2: the write must be atomic (temp file + os.replace) -----------------
+
+def test_write_token_leaves_no_temp_file_behind_on_success(tmp_path):
+    token = tmp_path / "token.json"
+    token.write_text("old")
+    auth._write_token(str(token), FakeCreds(valid=True))
+    leftovers = [p.name for p in tmp_path.iterdir() if p.name.startswith(".token-")]
+    assert leftovers == []
+    assert token.read_text() == '{"token": "fake"}'
+
+
+def test_write_token_temp_file_is_created_in_the_same_directory(tmp_path, monkeypatch):
+    """os.replace is only atomic within one filesystem; mkstemp must be given `dir=` rather
+    than falling back to the system temp directory, or the replace could cross a mount
+    boundary and silently degrade to copy-then-delete."""
+    token = tmp_path / "sub" / "token.json"
+    seen_dirs = []
+    real_mkstemp = auth.tempfile.mkstemp
+
+    def spy(*args, **kwargs):
+        seen_dirs.append(kwargs.get("dir"))
+        return real_mkstemp(*args, **kwargs)
+
+    monkeypatch.setattr(auth.tempfile, "mkstemp", spy)
+    auth._write_token(str(token), FakeCreds(valid=True))
+    assert seen_dirs == [str(token.parent)]
+
+
+class _ExplodingCreds:
+    def to_json(self):
+        raise RuntimeError("boom mid-write")
+
+
+def test_a_failed_write_leaves_the_previous_token_file_untouched(tmp_path):
+    """The whole point of atomic replace: a writer that dies partway through must never
+    truncate the real file. The old, valid content survives until a complete replacement is
+    ready to swap in - and the abandoned temp file is cleaned up, not left behind."""
+    token = tmp_path / "token.json"
+    token.write_text("old-good-token")
+
+    with pytest.raises(RuntimeError):
+        auth._write_token(str(token), _ExplodingCreds())
+
+    assert token.read_text() == "old-good-token"          # untouched, not truncated
+    leftovers = [p.name for p in tmp_path.iterdir() if p.name.startswith(".token-")]
+    assert leftovers == []                                 # temp file cleaned up on failure
 
 
 def test_symlinked_token_path_is_refused(tmp_path):
