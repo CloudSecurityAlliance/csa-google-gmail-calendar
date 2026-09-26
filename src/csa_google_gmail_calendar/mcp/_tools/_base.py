@@ -69,6 +69,17 @@ WRITE = ToolAnnotations(read_only_hint=False, destructive_hint=False, idempotent
 DESTRUCTIVE = ToolAnnotations(read_only_hint=False, destructive_hint=True, idempotent_hint=False,
                               open_world_hint=True)
 
+# The one read this server has that is NOT open-world: `auth_status` (`_tools/auth.py`) makes
+# no network call and returns no Google-authored content at all - only this process's own
+# computed state about a local token file. `open_world_hint=True` on every OTHER tool here
+# is doing real work (it tells a client "scrutinise this, it's from an open world of external
+# entities, including strangers writing message bodies and event summaries"); repeating it on
+# a tool for which it is simply false would not be conservative, it would be inaccurate, and an
+# annotation that is uniformly true on every tool carries no information at all. Matches
+# csa-zendesk's own `auth_status` precedent.
+LOCAL_READ = ToolAnnotations(read_only_hint=True, destructive_hint=False, idempotent_hint=True,
+                            open_world_hint=False)
+
 
 def _took(started: float) -> str:
     return f"{(time.monotonic() - started) * 1000:.0f}ms"

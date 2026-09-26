@@ -40,7 +40,7 @@ from ... import auth
 from ... import exceptions as exc
 from .._auth_flow import build_flow, consent_url, finish, start_loopback
 from .._config import Settings
-from ._base import READ, WRITE, tool
+from ._base import LOCAL_READ, WRITE, tool
 
 # Neither WRITE nor DESTRUCTIVE fits `logout`: it destroys the local credential (and, best
 # effort, revokes it at Google) but is safe to call twice - the second call finds nothing to
@@ -172,7 +172,7 @@ def register_auth_tools(app: MCPServer, settings: Settings) -> None:
         finally:
             loopback.close()
 
-    @tool(app, annotations=READ)
+    @tool(app, annotations=LOCAL_READ)
     def auth_status() -> dict[str, Any]:
         """Report whether a credential is cached, whether it covers every scope this
         deployment's enabled capabilities need, and - if so - whether it looks usable right

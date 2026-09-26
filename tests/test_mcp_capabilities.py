@@ -17,6 +17,14 @@ from csa_google_gmail_calendar.mcp._capabilities import TOOL_CAPABILITIES
 # capability-gated tools are registered (tasks 11/12); empty today because the auth tools
 # never call a gated Backend method at all - see `_capabilities.py`'s own note on why they are
 # `None`.
+#
+# OBLIGATION ON WHOEVER EXTENDS THIS (fix round 1, task 10 review): unlike the two tests above
+# it, `test_declared_capability_matches_the_backend_gate` is NOT structurally generic - it can
+# only check pairs that are IN this map. A task 11/12 author who registers a new
+# capability-gated tool, gets its `TOOL_CAPABILITIES` entry wrong, AND forgets to add a row
+# here gets a green suite anyway: the test has nothing to check it against. Every new
+# capability-gated tool this project adds must get a row here, in the same change that
+# registers it - carried forward into task 11's brief as well.
 _TOOL_TO_GATED_METHOD: dict[str, str] = {}
 
 
@@ -58,14 +66,27 @@ def test_no_tool_is_named_delete_email():
     assert "delete_email" not in _tool_names(server)
 
 
-def test_every_tool_declares_open_world_hint():
-    """Every result this server returns is either Google-authored content or (for the auth
-    tools) a fact that still involves Google's own OAuth endpoint - see `_tools/_base.py`'s
-    module docstring. Uniform across every tool, including the three auth ones, deliberately:
-    a per-tool judgment call here is exactly the kind of thing that drifts."""
+# Tool name -> the `open_world_hint` it must declare. Defaults to `True` (the general rule:
+# every result here is either Google-authored content, or - for `authenticate`/`logout` - a
+# fact that still involves Google's own OAuth endpoint). `auth_status` is the one deliberate
+# `False`: it makes no network call (`test_auth_status_makes_no_network_call` in
+# test_mcp_server_shape.py) and returns only this server's own computed state about a local
+# token file - never Google-authored content. `True` there would not be conservative, it would
+# be inaccurate, and a hint that is uniformly `True` across every tool carries no information at
+# all (fix round 1, task 10 review). An expected-value map, not an exemption list with a skip:
+# a map says what EVERY tool claims, so the next divergence is a visible mismatch rather than a
+# silent extra exemption nobody notices growing.
+_EXPECTED_OPEN_WORLD_HINT: dict[str, bool] = {
+    "auth_status": False,
+}
+
+
+def test_every_tool_declares_the_expected_open_world_hint():
     server = create_server(backend=None, policy=policy.Policy())
     for t in server._tool_manager.list_tools():
-        assert t.annotations is not None and t.annotations.open_world_hint is True, t.name
+        expected = _EXPECTED_OPEN_WORLD_HINT.get(t.name, True)
+        assert t.annotations is not None, t.name
+        assert t.annotations.open_world_hint is expected, t.name
 
 
 def test_disabled_capabilities_still_expose_the_auth_lifecycle_tools():
