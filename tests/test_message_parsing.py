@@ -4,7 +4,7 @@ import pytest
 
 from csa_google_gmail_calendar.backend import FakeBackend
 from csa_google_gmail_calendar.exceptions import NotFoundError
-from csa_google_gmail_calendar.mail import Mail
+from csa_google_gmail_calendar.mail import _MAX_MIME_DEPTH, Mail
 
 
 def _b64(s: str) -> str:
@@ -73,6 +73,11 @@ def test_a_message_with_no_body_part_at_all_says_so():
     assert m.body_source == "none"
     assert m.body_markdown == ""
     assert len(m.attachments) == 1
+    # FIX 1 (fix round 1): a genuinely bodyless message must NOT carry the depth-truncation
+    # disclosure - the two "none" cases (nothing here vs. something here I didn't look at) have
+    # to be distinguishable, or this test and the deep-nesting test below assert the same
+    # observable result for different reasons and the trap is back.
+    assert not any("nested past" in t for t in m.transformations)
 
 
 def test_attachments_are_listed_with_id_name_type_and_size():
@@ -147,14 +152,59 @@ def test_deeply_nested_payload_does_not_blow_the_stack():
 
     # Must not raise RecursionError.
     m = Mail(_DeepMessageBackend()).read_message("m1")
-    # The leaf is past `_MAX_MIME_DEPTH`, so it is legitimately not found - "none" is the
-    # honest answer for a message this malformed, not a crash.
     assert m.body_source == "none"
+    # FIX 1 (fix round 1): "none" here must NOT look like the genuinely-bodyless "none" in
+    # `test_a_message_with_no_body_part_at_all_says_so` above - a caller (and this test suite)
+    # has to be able to tell "nothing here" from "something here I never inspected". Discriminates
+    # by content, not merely presence: this message's disclosure names the depth limit, the
+    # bodyless one above has no such entry at all.
+    assert any("nested past" in t and str(_MAX_MIME_DEPTH) in t for t in m.transformations)
+
+
+def test_payload_exactly_at_the_depth_bound_is_not_flagged_as_truncated():
+    """FIX 1 boundary check: a message that reaches `_MAX_MIME_DEPTH` and stops there on its
+    own (no further children past the bound) is not truncated - `_walk` only flags truncation
+    when it stops descending WHILE children remain unvisited."""
+    leaf = {"mimeType": "text/plain", "body": {"data": _b64("at the edge")}}
+    payload = leaf
+    for _ in range(_MAX_MIME_DEPTH):
+        payload = {"mimeType": "multipart/mixed", "parts": [payload]}
+    m = Mail(FakeBackend(messages={"m1": _msg(payload)})).read_message("m1")
+    assert m.body_markdown == "at the edge"
+    assert not any("nested past" in t for t in m.transformations)
 
 
 def test_message_id_not_found_raises_notfounderror_not_keyerror():
     with pytest.raises(NotFoundError):
         Mail(FakeBackend()).read_message("does-not-exist")
+
+
+def test_malformed_base64_in_a_body_part_does_not_break_the_whole_message():
+    """FIX 2 (fix round 1). A single leftover base64 character (length 1 more than a multiple
+    of 4) cannot be repaired by re-padding and raises `binascii.Error`. That must not escape
+    this module as a bare exception - and one corrupt part must not make an otherwise-readable
+    message unreadable: the good `text/html` sibling should still come through."""
+    p = {"mimeType": "multipart/alternative", "headers": [], "parts": [
+        {"mimeType": "text/plain", "body": {"data": "a"}},  # invalid: 1 leftover char
+        {"mimeType": "text/html", "body": {"data": _b64("<p>fallback</p>")}}]}
+    m = Mail(FakeBackend(messages={"m1": _msg(p)})).read_message("m1")
+    assert m.body_source == "text/html"
+    assert "fallback" in m.body_markdown
+    assert any("could not be decoded" in t and "text/plain" in t and "m1" in t
+               for t in m.transformations)
+
+
+def test_invalid_utf8_bytes_are_replaced_and_the_count_is_disclosed():
+    """FIX 3 (fix round 1). `errors="replace"` is right - refusing to show a body over two bad
+    bytes helps nobody - but silent substitution with no disclosure means `transformations`
+    positively (and wrongly) asserts nothing happened. The count, not just a bare flag, is what
+    lets a reader judge whether two bytes were mangled or the whole body was."""
+    raw = b"hello \xff\xfe world"  # two bytes that are not valid UTF-8 on their own
+    data = base64.urlsafe_b64encode(raw).decode()
+    p = {"mimeType": "text/plain", "headers": [], "body": {"data": data}}
+    m = Mail(FakeBackend(messages={"m1": _msg(p)})).read_message("m1")
+    assert "�" in m.body_markdown
+    assert any("2" in t and "not valid UTF-8" in t for t in m.transformations)
 
 
 def test_a_backend_that_raises_bare_keyerror_is_still_translated():

@@ -9,6 +9,8 @@ read directly, never a bare rule id standing on its own.
 from __future__ import annotations
 
 import base64
+import binascii
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -70,17 +72,30 @@ class ParsedMessage:
     transformations: list[str] = field(default_factory=list)
 
 
-def _walk(part: dict[str, Any], *, depth: int = 0) -> Any:
+def _walk(part: dict[str, Any], *, depth: int = 0,
+         truncated: list[bool] | None = None) -> Iterator[dict[str, Any]]:
     """Depth-first over the MIME tree. Gmail nests `multipart/related` inside
     `multipart/alternative` inside `multipart/mixed` routinely, and a one-level scan misses
     the body entirely on exactly those messages. Bounded by `_MAX_MIME_DEPTH` - see its
     docstring for why.
+
+    Fix round 1 (CINO 2026-09-26): hitting the bound with unwalked children left behind used to
+    be silent - `read_message` could not tell "this message genuinely has no body part" from
+    "the body is past depth 50 and was never inspected", and both produced the identical
+    `body_source == "none"`. That is exactly the trap the brief named. `truncated` is an
+    out-parameter (a shared mutable list, appended to but never read here) rather than a return
+    value, because `_walk` is a generator - its "return value" is only ever visible after full
+    iteration, and the caller needs to know truncation happened as it drains the walk, not
+    reconstruct it from a second pass.
     """
     yield part
+    children = part.get("parts") or ()
     if depth >= _MAX_MIME_DEPTH:
+        if children and truncated is not None:
+            truncated.append(True)
         return
-    for child in part.get("parts") or ():
-        yield from _walk(child, depth=depth + 1)
+    for child in children:
+        yield from _walk(child, depth=depth + 1, truncated=truncated)
 
 
 def _is_attachment(part: dict[str, Any]) -> bool:
@@ -97,6 +112,47 @@ def _decode(body: dict[str, Any]) -> str:
         return ""
     padded = data + "=" * (-len(data) % 4)  # Gmail strips base64url padding
     return base64.urlsafe_b64decode(padded).decode("utf-8", errors="replace")
+
+
+def _decode_body_part(body: dict[str, Any], *, label: str) -> tuple[str, list[str]]:
+    """Decode one body part's `data` via `_decode`, and disclose (never silently swallow or
+    silently substitute) either of the two ways that can go wrong.
+
+    Fix round 1 (CINO 2026-09-26), two findings folded into one wrapper because they are the
+    same failure mode - the body gets altered and the caller cannot tell - at two different
+    points in `_decode`:
+
+    FIX 2 - malformed base64. `data` of a length that cannot be valid base64 (Gmail-stripped
+    padding restores MOST truncated data, but a length that is 1 more than a multiple of 4 is
+    unrecoverable - no amount of `=` padding fixes it) raises `binascii.Error` (a `ValueError`
+    subclass) OUT OF `_decode`, uncaught, past this module's boundary - and at the MCP layer an
+    untranslated exception becomes an opaque `UnexpectedToolError` whose text this project's own
+    SDK suppresses, so a user would see nothing but "error executing tool". Caught here instead,
+    and NOT re-raised: one corrupt part should not make an otherwise-readable message unreadable
+    (a `multipart/alternative` with a mangled `text/plain` and a perfectly good `text/html`
+    sibling should still show the html). The caller loses only this one candidate - `label`
+    names which message and which part, so the loss is visible rather than merely "no body was
+    found".
+
+    FIX 3 - invalid UTF-8. `errors="replace"` is the right behaviour for `_decode` to keep -
+    refusing to show a body over two bad bytes helps nobody - but substituting with NO
+    disclosure means `transformations` positively asserts nothing happened when something did,
+    which is worse than an empty `transformations` list: an empty list is a true "nothing to
+    report", a non-empty body with silently substituted bytes is a false one. Counted here
+    (`str.count("\\ufffd")`, the replacement character `errors="replace"` inserts per invalid
+    byte sequence) rather than merely flagged, the same reasoning csa-zendesk's
+    `_untrusted.py` gives for counting neutralised characters instead of a bare flag: a count is
+    what lets a reader judge whether two bytes were mangled or the whole body was.
+    """
+    try:
+        text = _decode(body)
+    except (binascii.Error, ValueError) as exc:
+        return "", [f"{label} could not be decoded and was treated as empty: {exc}"]
+    substituted = text.count("�")
+    if substituted:
+        return text, [f"{substituted} byte(s) in {label} were not valid UTF-8 and were "
+                      f"replaced with U+FFFD"]
+    return text, []
 
 
 def _header(headers: list[dict[str, Any]] | None, name: str) -> str:
@@ -148,7 +204,9 @@ class Mail:
 
         body_candidates: dict[str, str] = {}
         attachments: list[AttachmentRef] = []
-        for part in _walk(payload):
+        decode_notes: list[str] = []
+        truncated: list[bool] = []
+        for part in _walk(payload, truncated=truncated):
             if _is_attachment(part):
                 body = part.get("body") or {}
                 attachments.append(AttachmentRef(
@@ -160,12 +218,29 @@ class Mail:
                 continue
             mime_type = part.get("mimeType", "")
             if mime_type in _BODY_PREFERENCE and mime_type not in body_candidates:
-                text = _decode(part.get("body") or {})
+                text, notes = _decode_body_part(
+                    part.get("body") or {},
+                    label=f"the {mime_type} part of message {message_id!r}",
+                )
+                decode_notes.extend(notes)
                 if text:  # empty content loses to a non-empty sibling - see `_pick_body`
                     body_candidates[mime_type] = text
 
         raw_body, body_source = _pick_body(body_candidates)
-        body_markdown, transformations = self._render_body(raw_body, body_source)
+        body_markdown, render_notes = self._render_body(raw_body, body_source)
+        # Structural notes (truncation) first, then per-part decode notes, then body-render
+        # notes - roughly the order a reader would want them: "here is what I could not even
+        # look at", then "here is what went wrong decoding what I did look at", then "here is
+        # what I changed converting what decoded fine".
+        transformations: list[str] = []
+        if truncated:
+            transformations.append(
+                f"this message's MIME tree is nested past the {_MAX_MIME_DEPTH}-level walk "
+                "limit; parts beyond that depth were not inspected and may hold additional "
+                "body or attachment content"
+            )
+        transformations.extend(decode_notes)
+        transformations.extend(render_notes)
 
         return ParsedMessage(
             id=message.get("id", message_id),

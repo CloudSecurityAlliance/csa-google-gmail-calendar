@@ -47,6 +47,7 @@ Created 2026-09-16.
 - [ ] **[#8](https://github.com/CloudSecurityAlliance/csa-google-gmail-calendar/issues/8) Attachments have no upload endpoint** — resolved in the plan as `CSA_GGC_ATTACH_DIR` (Task 5/6); close once those land.
 - [ ] **[#9](https://github.com/CloudSecurityAlliance/csa-google-gmail-calendar/issues/9) There is no receive** — `users.watch` omitted deliberately; `list_history` statefulness still open.
 - [ ] **[#11](https://github.com/CloudSecurityAlliance/csa-google-gmail-calendar/issues/11) `narrowest_scope` sorts by string length** — fixed by the lattice in Task 1; regenerate the inventory and coverage matrix in the same commit.
+- [ ] **Repo-wide `pytest --cov` sits around 65% against the `fail_under = 90` gate in `pyproject.toml`, mid-plan (checked at Task 4/14).** Expected right now — `backend.py`/`policy.py` carry calendar and other-capability code paths later tasks haven't wired tests to yet — but flagging it here so Task 13 (docs/drift) doesn't rediscover it cold at the end. Per-module coverage for files a task actually owns is the meaningful number until then (Task 4's own files, `mail.py` + `_markdown.py`, are at 98%/92%).
 
 ## Repo standards
 
