@@ -142,7 +142,9 @@ def _tally_utf8_replacement(exc: UnicodeError) -> tuple[str | bytes, int]:
     `decode` call) - typed as the broader `UnicodeError` because that is the signature
     `codecs.register_error` itself declares.
     """
-    assert isinstance(exc, UnicodeDecodeError)
+    # Narrows a type, not a guard: `codecs.register_error` only ever calls this with one,
+    # per the docstring above.
+    assert isinstance(exc, UnicodeDecodeError)  # nosec B101
     _utf8_replacement_tally.count = (
         getattr(_utf8_replacement_tally, "count", 0) + (exc.end - exc.start)
     )

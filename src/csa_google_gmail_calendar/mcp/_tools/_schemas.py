@@ -268,3 +268,54 @@ class GetAttachmentOut(TypedDict):
     path: str
     filename: str
     size_bytes: int
+
+
+class ProfileOut(TypedDict):
+    email_address: str
+    messages_total: int
+    threads_total: int
+    history_id: str
+
+
+def profile_out(raw: dict[str, Any]) -> ProfileOut:
+    """Gmail's own `users.getProfile` shape, renamed to this project's snake_case convention -
+    same reasoning as every other `*_out` builder in this module: the wire shape is a contract
+    this project controls, not a re-export of whatever key spelling the upstream API happens
+    to use."""
+    return {
+        "email_address": raw.get("emailAddress", ""),
+        "messages_total": raw.get("messagesTotal", 0),
+        "threads_total": raw.get("threadsTotal", 0),
+        "history_id": raw.get("historyId", ""),
+    }
+
+
+class WhoamiOut(TypedDict):
+    email_address: str
+
+
+def whoami_out(raw: dict[str, Any]) -> WhoamiOut:
+    """The one field `whoami` exists to answer - see that tool's own docstring in
+    `mail_read.py` for why it is a separate, narrower tool rather than telling every caller to
+    read `get_profile()["email_address"]` themselves."""
+    return {"email_address": raw.get("emailAddress", "")}
+
+
+class HistoryOut(TypedDict):
+    history: list[dict[str, Any]]
+    history_id: str
+
+
+def history_out(raw: dict[str, Any], *, start_history_id: str) -> HistoryOut:
+    """Passed through mostly unchanged, the same choice `_list_events_out` (`calendar_read.py`)
+    makes for `events`: a `History` record's own internal shape (`messagesAdded`,
+    `labelsRemoved`, and so on, each nesting a partial message resource) is Gmail's, not this
+    project's, to redesign, and duplicating that whole nested schema by hand buys nothing a
+    passthrough does not already give a caller who reads Gmail's own `history.list`
+    documentation. Only the two keys this project renames (`historyId` -> `history_id`) and a
+    `start_history_id` used only as this function's own fallback (never as a business value the
+    caller should read as their answer) are new."""
+    return {
+        "history": raw.get("history", []),
+        "history_id": raw.get("historyId", start_history_id),
+    }

@@ -139,9 +139,10 @@ _SUBSUMES: dict[str, tuple[str, ...]] = {
     f"{_BASE}calendar.events": (f"{_BASE}calendar.events.readonly",),
     "https://mail.google.com/": (f"{_BASE}gmail.modify", f"{_BASE}gmail.send"),
 }
+# An import-time sanity check on a declared ordering, not a security control.
 for _dominant, _dominated in _SUBSUMES.items():
     for _d in _dominated:
-        assert scopes.RANK[_dominant] > scopes.RANK[_d], (
+        assert scopes.RANK[_dominant] > scopes.RANK[_d], (  # nosec B101
             f"{_dominant!r} must outrank {_d!r} in scopes.RANK to be declared as subsuming it")
 del _dominant, _dominated, _d
 
@@ -525,7 +526,8 @@ def _write_token(token_path: str, creds: Credentials) -> None:
     the mechanism the safety property depends on.
     """
     token_dir = os.path.dirname(token_path) or "."
-    if token_dir != "." and not os.path.isdir(token_dir):
+    # "." is a relative-path sentinel meaning "current directory", not a credential.
+    if token_dir != "." and not os.path.isdir(token_dir):  # nosec B105
         os.makedirs(token_dir, exist_ok=True)
         _harden(token_dir)              # only harden a dir we created; don't mutate a caller's (#4)
     _refuse_symlink(token_path)          # refuse to replace a pre-existing symlink at this name
@@ -646,8 +648,9 @@ def load_cached_credentials(token_path: str, required: list[str]) -> Credentials
     raise AuthError("cached credentials are invalid and cannot be refreshed")
 
 
-_TOKEN_PATH_ENV_VAR = "CSA_GGC_TOKEN_PATH"
-_DEFAULT_TOKEN_PATH = "~/.csa_google_gmail_calendar/token.json"
+# An env var NAME and a file path below, neither a credential.
+_TOKEN_PATH_ENV_VAR = "CSA_GGC_TOKEN_PATH"  # nosec B105
+_DEFAULT_TOKEN_PATH = "~/.csa_google_gmail_calendar/token.json"  # nosec B105
 
 
 def token_path_default() -> str:

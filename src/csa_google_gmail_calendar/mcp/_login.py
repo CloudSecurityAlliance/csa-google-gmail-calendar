@@ -56,7 +56,10 @@ def _branded_success_page():
             self.last_request_uri: str | None = None
             self._success_message = success_message      # kept for signature compatibility
 
-        def __call__(self, environ, start_response):
+        def __call__(self, environ, start_response):  # pragma: no cover - only reached by a
+            # real browser redirect during interactive consent (task 14's gated live suite);
+            # `test_login.py::test_branded_success_page_swaps_and_restores_the_redirect_app`
+            # covers the swap itself without invoking this method.
             start_response("200 OK", [("Content-type", "text/html; charset=utf-8")])
             self.last_request_uri = wsgiref.util.request_uri(environ)
             return [SUCCESS_HTML.encode("utf-8")]

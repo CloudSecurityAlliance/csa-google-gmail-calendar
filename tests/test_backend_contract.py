@@ -293,3 +293,48 @@ def test_list_drafts_reports_a_next_page_token_when_truncated():
     second = fake.list_drafts(limit=2, page_token=first["nextPageToken"])
     assert len(second["drafts"]) == 1
     assert "nextPageToken" not in second
+
+
+# --- list_history (task 13 - deferred from task 3, see that task's own report) --------------
+
+def test_list_history_reports_nothing_changed_when_the_store_is_empty():
+    """The one branch the previous version of this method could ever take - kept as its own
+    test now that a second, non-trivial branch exists, so a future edit cannot collapse them
+    back into the same untested state."""
+    fake = FakeBackend()
+    result = fake.list_history(start_history_id="10")
+    assert result == {"history": [], "historyId": "10"}
+
+
+def test_list_history_reports_a_record_newer_than_start_history_id():
+    """The branch task 3 could not test: a seeded history store makes 'something changed' a
+    real, assertable outcome instead of the only untestable claim in the tool."""
+    fake = FakeBackend(history=[{"id": "5", "messagesAdded": [{"message": {"id": "m1"}}]},
+                                {"id": "12", "messagesAdded": [{"message": {"id": "m2"}}]}])
+    result = fake.list_history(start_history_id="10")
+    assert [h["id"] for h in result["history"]] == ["12"]
+    assert result["historyId"] == "12"
+
+
+def test_list_history_excludes_records_at_or_before_start_history_id():
+    """`startHistoryId` is exclusive, matching Gmail's own `history.list` semantics - a record
+    whose id equals the ask is not "since" it."""
+    fake = FakeBackend(history=[{"id": "10"}])
+    result = fake.list_history(start_history_id="10")
+    assert result["history"] == []
+    assert result["historyId"] == "10"
+
+
+def test_list_history_orders_records_ascending_by_id():
+    fake = FakeBackend(history=[{"id": "30"}, {"id": "20"}, {"id": "40"}])
+    result = fake.list_history(start_history_id="10")
+    assert [h["id"] for h in result["history"]] == ["20", "30", "40"]
+
+
+def test_list_history_treats_a_non_numeric_start_history_id_as_zero():
+    """Malformed, not unknown - `get_message`/`get_thread` raise `NotFoundError` for an id they
+    have never heard of; a `start_history_id` this fake cannot parse is not a lookup failure the
+    same way, so it is read as the widest possible ask rather than raised."""
+    fake = FakeBackend(history=[{"id": "1"}])
+    result = fake.list_history(start_history_id="not-a-number")
+    assert [h["id"] for h in result["history"]] == ["1"]

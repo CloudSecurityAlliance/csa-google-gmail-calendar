@@ -33,7 +33,13 @@ def test_a_disabled_capability_set_still_starts_the_server():
     docstring on why nothing here resolves eagerly."""
     server = create_server(backend=None, policy=policy.Policy(frozenset()))
     names = {t.name for t in server._tool_manager.list_tools()}
-    assert names == {"authenticate", "auth_status", "logout"}
+    # Task 13 adds three more tools that, like the auth lifecycle ones, are gated by no
+    # capability at all and so survive a fully-narrowed policy: `describe_configuration`,
+    # `demonstration_plan`, `report_a_problem` (`_capabilities.py`). `whoami`/`get_profile`/
+    # `list_history` are NOT in this set - they call `Backend.get_profile`/`list_history`,
+    # gated `mail.read`, which this policy does not enable.
+    assert names == {"authenticate", "auth_status", "logout",
+                     "describe_configuration", "demonstration_plan", "report_a_problem"}
 
 
 def test_auth_status_reports_no_credential_when_nothing_is_cached(tmp_path, monkeypatch):

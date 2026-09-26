@@ -2,6 +2,13 @@
 `list_threads`, `get_attachment`, `list_labels`, `list_drafts`, `get_draft` - the 8 read tools,
 all gated `policy.MAIL_READ`.
 
+`list_history`, `get_profile` and `whoami` (task 13) are the same gate, added here rather than
+a separate module - all three are thin reads with no write half, same as everything else in
+this file. `list_history`/`get_profile` are spec §5's "Keeping up" tier; `whoami` is this
+project's own addition on top of it (not in the spec's 31), because `demonstration_plan`
+(`demo.py`) needs a cheap way to learn the authenticated address without pulling `get_profile`'s
+message/thread counts along with it.
+
 Every tool here is registered only when `policy_obj.allows(<backend method>)` is true (see
 `server.py`'s module docstring on why a disabled capability is a registration-time absence,
 not a registered-but-refusing tool) - `PolicyBackend` (if that is what `backend` is) refuses
@@ -22,16 +29,22 @@ from ._base import READ, tool
 from ._schemas import (
     DraftPreviewOut,
     GetAttachmentOut,
+    HistoryOut,
     ListThreadsOut,
     MessageOut,
+    ProfileOut,
     SearchMessagesOut,
     ThreadOut,
+    WhoamiOut,
     decode_attachment_bytes,
     draft_preview_out,
+    history_out,
     list_threads_out,
     message_out,
+    profile_out,
     search_messages_out,
     thread_out,
+    whoami_out,
 )
 
 
@@ -237,3 +250,41 @@ def register_mail_read_tools(app: MCPServer, backend: Backend, policy_obj: polic
             server has."""
             draft = backend.get_draft(draft_id=draft_id)
             return draft_preview_out(draft)
+
+    if policy_obj.allows("list_history"):
+        @tool(app, annotations=READ)
+        def list_history(start_history_id: str) -> HistoryOut:
+            """What changed in this mailbox since a known point - message adds/removes and
+            label changes, without re-listing everything. `start_history_id` is a previous
+            `historyId` you already have (from `get_profile`, `whoami`, or a prior
+            `list_history` call's own `history_id`); the response's `history_id` is the new
+            high-water mark to pass next time.
+
+            An empty `history` list with `history_id` unchanged from what you asked for means
+            genuinely nothing has changed - not that tracking is broken. Google discards
+            history past a retention window (typically about a week); a `start_history_id` too
+            old to be recognised is refused as not found, and the fix is to call `get_profile`
+            for a fresh starting point and treat everything read from here on as new, not to
+            retry the same id."""
+            raw = backend.list_history(start_history_id=start_history_id)
+            return history_out(raw, start_history_id=start_history_id)
+
+    if policy_obj.allows("get_profile"):
+        @tool(app, annotations=READ)
+        def get_profile() -> ProfileOut:
+            """This account's own mailbox summary: its address, total message and thread
+            counts, and the current `history_id` (the value to hand `list_history` to learn
+            what changes from this point forward). Use `whoami` instead when all you need is
+            the address - this returns the full summary Gmail's own `users.getProfile` does."""
+            return profile_out(backend.get_profile())
+
+    if policy_obj.allows("get_profile"):  # whoami calls the identical Backend method
+        @tool(app, annotations=READ)
+        def whoami() -> WhoamiOut:
+            """This account's own email address, and nothing else - the narrow answer to "who
+            am I signed in as", for a caller (a model, or a demonstration plan) that needs to
+            know its own address without reading `get_profile`'s message/thread counts. This is
+            the address `reply`/`reply_all` already exclude automatically, and the one address
+            this server's own `demonstration_plan` sends every demo message to - never an
+            address supplied as an argument, here or anywhere it is used."""
+            return whoami_out(backend.get_profile())

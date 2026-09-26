@@ -63,6 +63,7 @@ from ..backend import ApiBackend
 from ..policy import PolicyBackend
 from . import _logging
 from ._config import Settings, policy_from_env, settings_from_env, startup_warnings
+from ._flavours import flavour_from_env
 from .server import create_server
 
 
@@ -115,6 +116,10 @@ environment:
   CSA_GGC_CLIENT_SECRETS OAuth client secrets JSON (`login`/`authenticate` only; defaults to
                          ~/.csa_google_gmail_calendar/client_secret.json if that exists)
   CSA_GGC_ATTACH_DIR     directory outgoing mail may attach files from (unset: attachments off)
+  CSA_GGC_FLAVOUR        core|google|full - which tools are REGISTERED, not which refuse
+                         (default full - no restriction beyond CSA_GGC_CAPABILITIES). See
+                         `describe_configuration`'s own output for what the active flavour
+                         hides and why.
   CSA_GGC_LOG_LEVEL      DEBUG|INFO|WARNING|ERROR|CRITICAL (default WARNING)
 """
 
@@ -163,5 +168,7 @@ def main(argv: Sequence[str] | None = None, env: Mapping[str, str] | None = None
     # was handed, matching `_config.py`'s own note on why `token_path` does the same.
     backend = PolicyBackend(_LazyApiBackend(settings), policy)
     attach_policy = attachment_policy_from_env()
-    create_server(backend, policy, attach_policy=attach_policy).run(transport="stdio")
+    flavour = flavour_from_env(env)
+    create_server(backend, policy, flavour=flavour, attach_policy=attach_policy).run(
+        transport="stdio")
     return 0

@@ -35,6 +35,10 @@ _TOOL_TO_GATED_METHOD: dict[str, str] = {
     "list_labels": "list_labels",
     "list_drafts": "list_drafts",
     "get_draft": "get_draft",
+    # --- Keeping up (task 13) - whoami calls the identical Backend method as get_profile ---
+    "list_history": "list_history",
+    "get_profile": "get_profile",
+    "whoami": "get_profile",
     # --- Gmail organising/composing - tool name differs from the Backend method it calls
     # for three of these (archive_email -> archive_message, trash_email -> trash_message,
     # untrash_email -> untrash_message; ADR-001's naming lives on the TOOL side only) ---
@@ -133,6 +137,12 @@ def test_no_tool_is_named_delete_email():
 # silent extra exemption nobody notices growing.
 _EXPECTED_OPEN_WORLD_HINT: dict[str, bool] = {
     "auth_status": False,
+    # Task 13's configuration surface: none of the three makes a network call or returns
+    # Google-authored content - same reasoning as `auth_status` above, restated in `_base.py`'s
+    # `LOCAL_READ` and in each tool's own module docstring.
+    "describe_configuration": False,
+    "demonstration_plan": False,
+    "report_a_problem": False,
 }
 
 

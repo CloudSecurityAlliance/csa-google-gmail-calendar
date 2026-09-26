@@ -27,9 +27,18 @@ callers (mostly tests) that never actually invoke a registered tool's function -
 alone never reads it. `cli.py`'s real stdio path never passes `None`; see that module for why
 the real `Backend` is itself a lazy, deferred-construction wrapper rather than something
 resolved here.
-`flavour` is accepted and stashed the same way as before; `_flavours.py` (task 13) is what
-gives it real filtering behaviour and validates its value. Passing an unrecognised flavour
-string today is not an error - there is no `full`/`google`/`core` distinction to violate yet.
+`flavour` (task 13) is validated and applied at the very end, after every `register_*_tools`
+call above has run: `_flavours.allowed_tool_names` computes which of the tools that ALREADY
+registered (i.e. already filtered once by `Policy`) this flavour keeps, and anything it does not
+keep is removed from `app._tool_manager` via `remove_tool` - the same registration-time-absence
+principle `Policy` itself applies, layered on top rather than threaded through every
+`register_*_tools` function's own signature (none of them needs to know a flavour exists).
+Registering everything and then removing what a flavour excludes, rather than filtering during
+registration, is deliberate: it means `_flavours.py` owns the complete "which flavour keeps
+which tool" decision in one place, instead of six call sites each re-deriving their own slice of
+it. An unrecognised flavour string raises immediately (`ValueError`), before the server is
+handed back to a caller - the same "fail loudly at startup" rule `policy_from_env` applies to
+`CSA_GGC_CAPABILITIES`.
 """
 from __future__ import annotations
 
@@ -43,10 +52,14 @@ from .._attachments import AttachmentPolicy
 from ..backend import Backend
 from ..policy import Policy
 from ._config import settings_from_env
+from ._flavours import allowed_tool_names
 from ._tools import (
     register_auth_tools,
     register_calendar_read_tools,
     register_calendar_write_tools,
+    register_config_tools,
+    register_demo_tools,
+    register_feedback_tools,
     register_mail_read_tools,
     register_mail_send_tools,
     register_mail_write_tools,
@@ -108,5 +121,18 @@ def create_server(backend: Backend | None, policy: Policy, flavour: str = "full"
     register_mail_send_tools(app, mail_backend, policy, attach_policy)
     register_calendar_read_tools(app, mail_backend, policy)
     register_calendar_write_tools(app, mail_backend, policy)
+    register_config_tools(app, settings, flavour, attach_policy)
+    register_demo_tools(app)
+    register_feedback_tools(app, settings, flavour)
+
+    # Flavour filtering, last: every tool above is registered under `Policy` alone, and this
+    # removes whatever the active flavour additionally excludes - see the module docstring for
+    # why this is a post-hoc `remove_tool` pass rather than a filter threaded through every
+    # `register_*_tools` call above. Raises for an unrecognised flavour before returning the
+    # server to whatever caller was waiting on it.
+    registered_names = frozenset(t.name for t in app._tool_manager.list_tools())
+    keep = allowed_tool_names(flavour, registered_names)
+    for name in sorted(registered_names - keep):
+        app._tool_manager.remove_tool(name)
 
     return app

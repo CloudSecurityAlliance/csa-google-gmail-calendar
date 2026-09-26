@@ -45,13 +45,34 @@ Created 2026-09-16.
 
 - [ ] **Execute [the first-implementation plan](docs/superpowers/plans/2026-09-25-gmail-calendar-first-implementation.md)** — 14 tasks: Gmail read/compose/send with attachments, Calendar events and invitation responses. Scope decided 2026-09-25: allowlisted local attachment paths, direct send allowed, no filters or settings.
 - [ ] **[#8](https://github.com/CloudSecurityAlliance/csa-google-gmail-calendar/issues/8) Attachments have no upload endpoint** — resolved in the plan as `CSA_GGC_ATTACH_DIR` (Task 5/6); close once those land.
-- [ ] **[#9](https://github.com/CloudSecurityAlliance/csa-google-gmail-calendar/issues/9) There is no receive** — `users.watch` omitted deliberately; `list_history` statefulness still open.
+- [x] **[#9](https://github.com/CloudSecurityAlliance/csa-google-gmail-calendar/issues/9) There is no receive** ✅ **2026-09-26 (partial)** — `users.watch` stays omitted deliberately (needs a Cloud project, a Pub/Sub topic, a public HTTPS endpoint this stdio server cannot offer). `list_history`'s statefulness is resolved: `FakeBackend` now has a seedable `history` store (task 13), so "something changed" is a tested branch, not only "nothing did" — see `backend.py`'s `list_history` and `tests/test_backend_contract.py`. Still open: nothing in this codebase automatically APPENDS a history record when a message/label changes (a caller seeds `history=` directly); a full incremental-sync simulation is future work, not required for the tool to be correct or tested.
 - [ ] **[#11](https://github.com/CloudSecurityAlliance/csa-google-gmail-calendar/issues/11) `narrowest_scope` sorts by string length** — fixed by the lattice in Task 1; regenerate the inventory and coverage matrix in the same commit.
-- [ ] **Repo-wide `pytest --cov` sits around 65% against the `fail_under = 90` gate in `pyproject.toml`, mid-plan (checked at Task 4/14).** Expected right now — `backend.py`/`policy.py` carry calendar and other-capability code paths later tasks haven't wired tests to yet — but flagging it here so Task 13 (docs/drift) doesn't rediscover it cold at the end. Per-module coverage for files a task actually owns is the meaningful number until then (Task 4's own files, `mail.py` + `_markdown.py`, are at 98%/92%).
+- [x] **Repo-wide `pytest --cov` gate** ✅ **2026-09-26** — was ~65% mid-plan (Task 4), now 91%+ against `fail_under = 90` (Task 13). `_auth_flow.py`/`_login.py`'s genuinely-interactive lines (a real browser, a real WSGI redirect body) are `# pragma: no cover` with a comment naming what covers them (Task 14's gated live suite); everything else in both files now has real unit tests, not a lowered gate.
+- [ ] **Task 14: the gated live probe against a real Google account** — the one remaining task in
+  [the first-implementation plan](docs/superpowers/plans/2026-09-25-gmail-calendar-first-implementation.md).
+  Everything else (library, MCP server, config/demo/CI surface) is implemented and unit-tested
+  against `FakeBackend`.
+- [ ] **There is no `delete_label`/`update_label` tool** — `Backend`'s own Protocol has neither
+  method. A label `create_label` makes (including the one `demonstration_plan` creates for its own
+  demo run, uniquely named per run to stay safe to repeat) cannot be removed or renamed through
+  this server. Spec's own "copy" section lists `update_label`/`delete_label` among the tools this
+  project intends to ship; neither has landed yet.
+- [ ] **`google` flavour is a conservative, literal tool-NAME match** against
+  `research/captures/2026-09-01-*.json`, not a semantic one (`_flavours.py`'s own module
+  docstring has the full reasoning). It under-represents Google's real published surface where
+  this project's naming differs for the same operation (`reschedule_event` vs. their
+  `update_event`, `find_free_time` vs. their `suggest_time`, and every tool ADR-001 expanded past
+  what their surface names). Revisit if `google` needs to be exact rather than conservative.
 
 ## Repo standards
 
-- [ ] **Apply [`PUBLIC-GITHUB-REPO-STANDARDS.md`](https://github.com/CloudSecurityAlliance-Internal/CINO-Platform-Engineering/blob/main/PUBLIC-GITHUB-REPO-STANDARDS.md)** once there is code to gate.
+- [x] **Apply [`PUBLIC-GITHUB-REPO-STANDARDS.md`](https://github.com/CloudSecurityAlliance-Internal/CINO-Platform-Engineering/blob/main/PUBLIC-GITHUB-REPO-STANDARDS.md)** ✅ **2026-09-26** —
+  `.github/workflows/ci.yml` (lint/type/test matrix 3.10-3.14/security, SHA-pinned actions) and
+  `release.yml` (Trusted Publishing + PEP 740 attestations, credential-free `build` job,
+  minimal `publish` job) both added; `RELEASING.md`/`CHANGELOG.md` written. **Still open:**
+  branch protection and the PyPI pending publisher are GitHub/PyPI-side, one-time, operator
+  setup (`RELEASING.md`'s own "One-time setup" section) — not something a commit to this repo
+  can configure.
 - [ ] **Decide vendored versus fetched Discovery snapshots**, as for the sibling repos.
 
 ## Open questions

@@ -126,8 +126,12 @@ def start_loopback() -> Loopback:
         while not collector.arrived.is_set():
             try:
                 server.handle_request()
-            except (OSError, ValueError):
-                # The caller closed the socket while this thread was between iterations.
+            except (OSError, ValueError):  # pragma: no cover - a genuine thread race (the
+                # caller's `close()` running on another thread between this thread's own
+                # iterations); reachable in production, not deterministically reproducible in
+                # a unit test without a fragile timing hack. Covered by the gated live suite
+                # (task 14), which exercises the real interactive `authenticate` path this
+                # loop backs.
                 # `server_close()` sets the descriptor to -1, and `handle_request()` then fails
                 # inside `selectors` with `ValueError: Invalid file descriptor: -1` rather than
                 # an OSError - both are needed, and the race is inherent to closing from

@@ -48,6 +48,13 @@ TOOL_CAPABILITIES: dict[str, str | None] = {
     "list_labels": "mail.read",
     "list_drafts": "mail.read",
     "get_draft": "mail.read",
+    # `list_history`/`get_profile` (task 13, deferred from task 3's `Backend.list_history`
+    # landing with no tool over it yet). `whoami` calls the same Backend method as
+    # `get_profile` (there is no separate "whoami" method on `Backend` - it is a narrower VIEW
+    # of the identical call, not a new capability), so it is gated identically.
+    "list_history": "mail.read",
+    "get_profile": "mail.read",
+    "whoami": "mail.read",
     # --- Gmail organising/composing (task 11, `_tools/mail_write.py`) - policy.MAIL_WRITE ---
     "create_draft": "mail.write",
     "update_draft": "mail.write",
@@ -87,6 +94,17 @@ TOOL_CAPABILITIES: dict[str, str | None] = {
     # --- Calendar delete (task 12, `_tools/calendar_write.py`) - policy.CALENDAR_DELETE,
     # OFF by default (see policy.DEFAULT_ENABLED) ---
     "delete_event": "calendar.delete",
+    # --- The configuration surface (task 13, `_tools/config.py`/`demo.py`/`feedback.py`) ---
+    # `None`, same reasoning as the auth-lifecycle tools above: none of these three touches
+    # `Backend`/`PolicyBackend` at all (`describe_configuration` and `demonstration_plan` read
+    # only this process's own `Policy`/tool registry; `report_a_problem` assembles a report from
+    # local state). They are also, like the auth tools, reachable regardless of
+    # `policy.enabled` and regardless of the active flavour (`_flavours.ALWAYS_REGISTERED`) - an
+    # operator narrowing every mail/calendar capability away must still be able to see what is
+    # configured, run the demo, and file a problem report.
+    "describe_configuration": None,
+    "demonstration_plan": None,
+    "report_a_problem": None,
 }
 
 

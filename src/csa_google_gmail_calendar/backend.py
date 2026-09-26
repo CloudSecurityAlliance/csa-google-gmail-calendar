@@ -198,10 +198,11 @@ class FakeBackend:
     """In-memory `Backend` double. Every seed store defaults to an empty container built here
     (never as a mutable default argument) so two instances never share state.
 
-    Ten stores, per the ruling on the brief's incomplete list of seven (CINO, 2026-09-25):
+    Eleven stores, per the ruling on the brief's incomplete list of seven (CINO, 2026-09-25):
     `messages`, `threads`, `drafts`, `labels`, `events`, `calendars`, `attachments`, `freebusy`,
-    `profile` (a single dict, not keyed by id), and `sent` (a list every outbound method
-    appends to).
+    `profile` (a single dict, not keyed by id), `sent` (a list every outbound method appends to),
+    and `history` (task 13 - see `list_history`'s own docstring for why an eleventh store was
+    added rather than leaving that method's only branch untestable).
 
     `messages` is the single source of truth for a message's labels and content; `threads`
     is only the registry of which thread ids exist plus any thread-level metadata seeded onto
@@ -218,7 +219,8 @@ class FakeBackend:
                 attachments: dict[str, dict[str, Any]] | None = None,
                 freebusy: dict[str, list[dict[str, Any]]] | None = None,
                 profile: dict[str, Any] | None = None,
-                sent: list[dict[str, Any]] | None = None) -> None:
+                sent: list[dict[str, Any]] | None = None,
+                history: list[dict[str, Any]] | None = None) -> None:
         self.messages: dict[str, dict[str, Any]] = dict(messages) if messages else {}
         self.threads: dict[str, dict[str, Any]] = dict(threads) if threads else {}
         self.drafts: dict[str, dict[str, Any]] = dict(drafts) if drafts else {}
@@ -229,6 +231,15 @@ class FakeBackend:
         self.freebusy: dict[str, list[dict[str, Any]]] = dict(freebusy) if freebusy else {}
         self.profile: dict[str, Any] = dict(profile) if profile else {}
         self.sent: list[dict[str, Any]] = list(sent) if sent else []
+        # Each record is a plain dict with at least an `"id"` key (a decimal historyId string,
+        # matching Gmail's own `History.id`) - `list_history` below filters on it numerically.
+        # Nothing in this fake APPENDS to this store automatically when a message changes: no
+        # task in this plan wires every mutating method to also record a history entry (that
+        # would touch every write method above and below this line for a task whose job is the
+        # tool surface, not a mailbox-wide event log), so a caller who wants a non-trivial
+        # `list_history` result seeds one directly via this constructor argument. See
+        # `list_history`'s own docstring for what this does and does not make testable.
+        self.history: list[dict[str, Any]] = [dict(h) for h in history] if history else []
         self._seq = 0  # one counter, shared across every id this fake mints
 
     def _next_id(self, prefix: str) -> str:
@@ -316,12 +327,30 @@ class FakeBackend:
         return copy.deepcopy(self.drafts[draft_id])
 
     def list_history(self, *, start_history_id: str) -> dict[str, Any]:
-        # No task in this plan seeds a history store, so there is nothing to diff against.
-        # Reporting "nothing changed since start_history_id" (rather than raising) is the
-        # correct default for an id Gmail's real history feed would also just echo back when
-        # asked for changes since itself - a future task adding real history semantics should
-        # add a `history` store and change this method, not work around an exception here.
-        return {"history": [], "historyId": start_history_id}
+        """Task 13 (deferred from task 3 - see that task's own report): a real `history` store
+        now backs this, so "something changed" is a testable branch and not only "nothing did".
+
+        Real `users.history.list` returns every `History` record with an `id` GREATER than
+        `startHistoryId`, plus the mailbox's current `historyId`. This mirrors that: records are
+        compared numerically (Gmail's own `historyId` is a decimal string, not lexically
+        ordered - `"9" > "10"` as strings, never as the ids they represent), and the returned
+        `historyId` is the highest id known, or `start_history_id` unchanged when nothing in the
+        store is newer (the same "echo the ask back" answer the previous version of this method
+        always gave, now the genuinely-correct answer for that one case rather than the only
+        answer available).
+
+        A non-numeric `start_history_id` is treated as `0` - the widest possible ask ("everything
+        is new") - rather than raising, matching the read tolerance the rest of this fake extends
+        to caller-supplied ids elsewhere (`get_message`/`get_thread` raise `NotFoundError` for an
+        unknown id, never `ValueError` for a malformed one)."""
+        try:
+            start = int(start_history_id)
+        except (TypeError, ValueError):
+            start = 0
+        matching = sorted((h for h in self.history if int(h.get("id", 0)) > start),
+                          key=lambda h: int(h["id"]))
+        latest = max((int(h.get("id", 0)) for h in self.history), default=start)
+        return {"history": copy.deepcopy(matching), "historyId": str(max(latest, start))}
 
     def get_profile(self) -> dict[str, Any]:
         # Decision (item 6, CINO 2026-09-25): raise rather than return {}. The real
