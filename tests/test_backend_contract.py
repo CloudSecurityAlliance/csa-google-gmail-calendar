@@ -280,3 +280,16 @@ def test_list_threads_reports_a_next_page_token_when_truncated():
     second = fake.list_threads(limit=2, page_token=first["nextPageToken"])
     assert len(second["threads"]) == 1
     assert "nextPageToken" not in second
+
+
+def test_list_drafts_reports_a_next_page_token_when_truncated():
+    """Fix round 2 (CINO 2026-09-25): list_drafts changed from a bare list to the same dict
+    shape as list_threads, so a truncated page is distinguishable and continuable."""
+    fake = FakeBackend(drafts={"d1": {"id": "d1"}, "d2": {"id": "d2"}, "d3": {"id": "d3"}})
+    first = fake.list_drafts(limit=2)
+    assert len(first["drafts"]) == 2
+    assert first["resultSizeEstimate"] == 3
+    assert "nextPageToken" in first
+    second = fake.list_drafts(limit=2, page_token=first["nextPageToken"])
+    assert len(second["drafts"]) == 1
+    assert "nextPageToken" not in second

@@ -2,7 +2,7 @@ import pytest
 from googleapiclient.errors import HttpError
 
 from csa_google_gmail_calendar._mime import SIMPLE_UPLOAD_LIMIT
-from csa_google_gmail_calendar.backend import ApiBackend
+from csa_google_gmail_calendar.backend import ApiBackend, FakeBackend
 from csa_google_gmail_calendar.exceptions import (
     AccessError,
     ApiError,
@@ -29,8 +29,32 @@ class _Req:
         return self._result if self._result is not None else {}
 
 
+# The names that are themselves the terminal, request-returning call - mirroring
+# googleapiclient's own generated surface, where e.g. `service.users().messages().list(...)`
+# has `users`/`messages` as resource accessors (they always return a sub-resource, whatever
+# they're called with) and `list` as the leaf that returns an `HttpRequest`.
+#
+# Fix round 2 (CINO 2026-09-25): the original heuristic - "terminal if kwargs are non-empty or
+# the path has 2+ dots" - is wrong for any zero-kwarg leaf call at a one-dot path, and
+# `list_calendars` (`calendarList().list()`) is exactly that shape. Under the old heuristic it
+# silently returned another `_Chain` instead of a request, which no attribute of `_Chain`
+# forbids accessing - `.execute` just resolved to another callable - so the failure surfaced
+# two calls later, as `'_Req' object has no attribute 'get'`, nowhere near its real cause. A
+# test double that lies in the pessimistic direction (working code looks broken) is worse than
+# one that lies optimistic (broken code looks fine reads as a bug in the code under test) - it
+# invites "fixing" correct production code to satisfy a broken test.
+_LEAF_METHODS = frozenset({
+    "list", "get", "getProfile", "create", "update", "delete", "modify",
+    "trash", "untrash", "send", "query", "insert", "patch",
+})
+
+
 class _Chain:
-    """Records the full call path so a test can assert users().messages().modify() args."""
+    """Records the full call path so a test can assert users().messages().modify() args.
+
+    Terminality is decided by `_LEAF_METHODS` membership, not by counting dots or kwargs - see
+    that constant's docstring for why the old heuristic was wrong.
+    """
 
     def __init__(self, rec, path="", results=None):
         self._rec, self._path, self._results = rec, path, results or {}
@@ -38,7 +62,7 @@ class _Chain:
     def __getattr__(self, name):
         def call(**kwargs):
             path = f"{self._path}.{name}".lstrip(".")
-            if kwargs or path.count(".") >= 2:
+            if name in _LEAF_METHODS:
                 return _Req(self._rec, path, kwargs, self._results.get(path))
             return _Chain(self._rec, path, self._results)
         return call
@@ -100,7 +124,7 @@ def _boom(err: HttpError) -> "_Chain":
         def __getattr__(self, name):
             def call(**kw):
                 path = f"{self._path}.{name}".lstrip(".")
-                if kw or path.count(".") >= 2:
+                if name in _LEAF_METHODS:
                     return _Req([], path, kw, error=err)
                 return Boom([], path)
             return call
@@ -305,3 +329,45 @@ def test_list_threads_passes_through_page_token():
     rec = []
     ApiBackend(_Chain(rec), _Chain([])).list_threads(page_token="tok2")
     assert rec[0][1]["pageToken"] == "tok2"
+
+
+# --- list_calendars: the zero-kwarg, one-dot leaf call - Fix round 2 (CINO 2026-09-25) ---
+
+def test_list_calendars_returns_the_items_from_a_zero_kwarg_call():
+    """calendarList().list() takes no kwargs of its own - the exact shape the old `_Chain`
+    heuristic (kwargs-or-two-dots) got wrong, silently handing back a `_Chain` instead of a
+    request. This is the regression test for that: the call must reach `.execute()` and
+    `list_calendars` must return the unwrapped `items` list."""
+    seeded = {"items": [{"id": "primary"}, {"id": "team@example.com"}]}
+    rec = []
+    cal = _Chain(rec, results={"calendarList.list": seeded})
+    result = ApiBackend(_Chain([]), cal).list_calendars()
+    assert result == seeded["items"]
+    name, kwargs, _ = rec[0]
+    assert name == "calendarList.list"
+    assert kwargs == {}
+
+
+# --- outbound return shape parity: Fix round 2 (CINO 2026-09-25) -------------------------
+
+def test_send_message_returns_the_same_keys_on_both_backends():
+    """FakeBackend.send_message used to also return `raw`, a key real `messages.send` never
+    sends back - a caller reading `result["raw"]` would pass every offline test and fail in
+    production. Pinned here so the two backends' return shapes cannot silently drift apart
+    again, rather than merely happening to agree."""
+    fake_result = FakeBackend().send_message(raw="aGVsbG8=")
+
+    seeded = {"id": "m1", "threadId": "m1", "labelIds": ["SENT"]}
+    api_result = ApiBackend(_Chain([], results={"users.messages.send": seeded}),
+                            _Chain([])).send_message(raw="aGVsbG8=")
+
+    assert set(fake_result) == set(api_result) == {"id", "threadId", "labelIds"}
+    assert "raw" not in fake_result
+
+
+def test_list_drafts_passes_through_page_token_and_maxresults():
+    rec = []
+    ApiBackend(_Chain(rec), _Chain([])).list_drafts(limit=10, page_token="tok3")
+    _, kwargs, _ = rec[0]
+    assert kwargs["maxResults"] == 10
+    assert kwargs["pageToken"] == "tok3"

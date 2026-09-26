@@ -47,14 +47,18 @@ class Backend(Protocol):
                      page_token: str | None = None) -> dict[str, Any]: ...
     def get_attachment(self, *, message_id: str, attachment_id: str) -> dict[str, Any]: ...
     def list_labels(self) -> list[dict[str, Any]]: ...
-    # `list_drafts` returns a bare list, not a dict - unlike `search_messages`/`list_threads`/
-    # `list_events`, there is nowhere to put a `nextPageToken` even though the real
-    # `drafts.list` paginates the same way. Adding a `page_token` parameter here would not fix
-    # that: the return type has no slot for a continuation signal, so a caller still could not
-    # tell a truncated list from a complete one. Fixing this needs a return-type change (to a
-    # dict carrying `drafts` + `nextPageToken`), which is not additive and is out of scope for
-    # this round - flagged, not silently left (CINO, Task 7 fix round 1).
-    def list_drafts(self, *, limit: int = 25) -> list[dict[str, Any]]: ...
+    # Fix round 2 (CINO 2026-09-25): `list_drafts` used to return a bare list, with nowhere to
+    # put a `nextPageToken` even though real `drafts.list` paginates the same way as
+    # `messages.list`/`threads.list`/`events.list` - `ApiBackend` received the token over the
+    # wire and dropped it at `result.get("drafts", [])`, discarding it, not merely failing to
+    # expose something that never arrived. Changed to the same `dict` shape as `list_threads`
+    # (`drafts` + `resultSizeEstimate` + `nextPageToken`, matching Gmail's own
+    # `ListDraftsResponse` schema) while nothing in this codebase yet calls `list_drafts` (no
+    # task past this one has landed), so there is no caller to migrate - the return-type change
+    # is not additive in general, but is free right now and only gets more expensive to make
+    # once something depends on the old shape.
+    def list_drafts(self, *, limit: int = 25,
+                    page_token: str | None = None) -> dict[str, Any]: ...
     def get_draft(self, *, draft_id: str) -> dict[str, Any]: ...
     def list_history(self, *, start_history_id: str) -> dict[str, Any]: ...
     def get_profile(self) -> dict[str, Any]: ...
@@ -293,8 +297,18 @@ class FakeBackend:
     def list_labels(self) -> list[dict[str, Any]]:
         return [copy.deepcopy(label) for label in self.labels.values()]
 
-    def list_drafts(self, *, limit: int = 25) -> list[dict[str, Any]]:
-        return [copy.deepcopy(d) for d in list(self.drafts.values())[:limit]]
+    def list_drafts(self, *, limit: int = 25, page_token: str | None = None) -> dict[str, Any]:
+        # Same dict shape as list_threads, matching Gmail's own ListDraftsResponse schema
+        # (Fix round 2, CINO 2026-09-25 - see the Protocol declaration's comment for why this
+        # is a return-type change made now rather than a page_token bolted onto a bare list).
+        drafts = list(self.drafts.values())
+        offset = int(page_token) if page_token else 0
+        page = drafts[offset:offset + limit]
+        result: dict[str, Any] = {"drafts": [copy.deepcopy(d) for d in page],
+                                  "resultSizeEstimate": len(drafts)}
+        if offset + limit < len(drafts):
+            result["nextPageToken"] = str(offset + limit)
+        return result
 
     def get_draft(self, *, draft_id: str) -> dict[str, Any]:
         if draft_id not in self.drafts:
@@ -416,7 +430,12 @@ class FakeBackend:
         self.messages[message_id] = message
         self.threads.setdefault(resolved_thread_id, {})
         self.sent.append(copy.deepcopy(message))
-        return copy.deepcopy(message)
+        # Real `messages.send`/`drafts.send` never return `raw` in the response body (Fix
+        # round 2, CINO 2026-09-25): a caller reading `result["raw"]` would pass every offline
+        # test against the old return value and fail against the real API - exactly the
+        # divergence this pairing exists to catch. `self.sent` already carries the full
+        # message, `raw` included, for whatever a test needs it for; the return value does not.
+        return {k: v for k, v in copy.deepcopy(message).items() if k != "raw"}
 
     def send_message(self, *, raw: str) -> dict[str, Any]:
         return self._send(raw=raw, thread_id=None)
@@ -795,9 +814,13 @@ class ApiBackend:
         result = self._mail(self._gmail.users().labels().list)
         return result.get("labels", [])
 
-    def list_drafts(self, *, limit: int = 25) -> list[dict[str, Any]]:
-        result = self._mail(self._gmail.users().drafts().list, maxResults=limit)
-        return result.get("drafts", [])
+    def list_drafts(self, *, limit: int = 25, page_token: str | None = None) -> dict[str, Any]:
+        # Passed through unchanged, same as list_events/list_threads - nextPageToken travels
+        # with it now instead of being received and discarded (Fix round 2, CINO 2026-09-25).
+        kwargs: dict[str, Any] = {"maxResults": limit}
+        if page_token:
+            kwargs["pageToken"] = page_token
+        return self._mail(self._gmail.users().drafts().list, **kwargs)
 
     def get_draft(self, *, draft_id: str) -> dict[str, Any]:
         return self._mail(self._gmail.users().drafts().get, id=draft_id)
