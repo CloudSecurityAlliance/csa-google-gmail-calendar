@@ -26,7 +26,15 @@ from googleapiclient import discovery
 from googleapiclient.errors import HttpError
 
 from ._mime import upload_strategy
-from .exceptions import AccessError, ApiError, AuthError, ConflictError, CsaGoogleError, NotFoundError
+from .exceptions import (
+    AccessError,
+    ApiError,
+    AuthError,
+    ConflictError,
+    CsaGoogleError,
+    NotFoundError,
+    UnsupportedOperation,
+)
 
 
 class Backend(Protocol):
@@ -35,9 +43,17 @@ class Backend(Protocol):
                         page_token: str | None = None) -> dict[str, Any]: ...
     def get_message(self, *, message_id: str, fmt: str = "full") -> dict[str, Any]: ...
     def get_thread(self, *, thread_id: str, fmt: str = "full") -> dict[str, Any]: ...
-    def list_threads(self, *, query: str | None = None, limit: int = 25) -> dict[str, Any]: ...
+    def list_threads(self, *, query: str | None = None, limit: int = 25,
+                     page_token: str | None = None) -> dict[str, Any]: ...
     def get_attachment(self, *, message_id: str, attachment_id: str) -> dict[str, Any]: ...
     def list_labels(self) -> list[dict[str, Any]]: ...
+    # `list_drafts` returns a bare list, not a dict - unlike `search_messages`/`list_threads`/
+    # `list_events`, there is nowhere to put a `nextPageToken` even though the real
+    # `drafts.list` paginates the same way. Adding a `page_token` parameter here would not fix
+    # that: the return type has no slot for a continuation signal, so a caller still could not
+    # tell a truncated list from a complete one. Fixing this needs a return-type change (to a
+    # dict carrying `drafts` + `nextPageToken`), which is not additive and is out of scope for
+    # this round - flagged, not silently left (CINO, Task 7 fix round 1).
     def list_drafts(self, *, limit: int = 25) -> list[dict[str, Any]]: ...
     def get_draft(self, *, draft_id: str) -> dict[str, Any]: ...
     def list_history(self, *, start_history_id: str) -> dict[str, Any]: ...
@@ -72,7 +88,7 @@ class Backend(Protocol):
     def get_calendar(self, *, calendar_id: str) -> dict[str, Any]: ...
     def list_events(self, *, calendar_id: str = "primary", time_min: str | None = None,
                     time_max: str | None = None, query: str | None = None,
-                    limit: int = 25) -> dict[str, Any]: ...
+                    limit: int = 25, page_token: str | None = None) -> dict[str, Any]: ...
     def get_event(self, *, calendar_id: str, event_id: str) -> dict[str, Any]: ...
     def query_freebusy(self, *, time_min: str, time_max: str,
                        calendar_ids: list[str]) -> dict[str, Any]: ...
@@ -81,6 +97,11 @@ class Backend(Protocol):
     def update_event(self, *, calendar_id: str, event_id: str, body: dict[str, Any],
                      send_updates: str = "all",
                      etag: str | None = None) -> dict[str, Any]: ...
+    # `respond_to_event` owns the RSVP read-modify-write itself (find the caller's own
+    # attendee, refuse when there isn't one, write back only the attendees field under the
+    # etag it read) rather than delegating any of that to a caller - controls live at the
+    # Backend seam, so the library refuses without the server. Task 8's `Calendar.respond()`
+    # is a thin wrapper that validates `response` and delegates here unchanged.
     def respond_to_event(self, *, calendar_id: str, event_id: str, response: str,
                          comment: str | None = None) -> dict[str, Any]: ...
     def delete_event(self, *, calendar_id: str, event_id: str,
@@ -245,7 +266,8 @@ class FakeBackend:
         thread["messages"] = copy.deepcopy(self._thread_messages(thread_id))
         return thread
 
-    def list_threads(self, *, query: str | None = None, limit: int = 25) -> dict[str, Any]:
+    def list_threads(self, *, query: str | None = None, limit: int = 25,
+                     page_token: str | None = None) -> dict[str, Any]:
         matched = []
         for thread_id in self.threads:
             msgs = self._thread_messages(thread_id)
@@ -254,7 +276,12 @@ class FakeBackend:
                 continue
             snippet = msgs[-1].get("snippet", "") if msgs else ""
             matched.append({"id": thread_id, "snippet": snippet})
-        return {"threads": matched[:limit], "resultSizeEstimate": len(matched)}
+        start = int(page_token) if page_token else 0
+        page = matched[start:start + limit]
+        result: dict[str, Any] = {"threads": page, "resultSizeEstimate": len(matched)}
+        if start + limit < len(matched):
+            result["nextPageToken"] = str(start + limit)
+        return result
 
     def get_attachment(self, *, message_id: str, attachment_id: str) -> dict[str, Any]:
         if message_id not in self.messages:
@@ -430,7 +457,7 @@ class FakeBackend:
 
     def list_events(self, *, calendar_id: str = "primary", time_min: str | None = None,
                     time_max: str | None = None, query: str | None = None,
-                    limit: int = 25) -> dict[str, Any]:
+                    limit: int = 25, page_token: str | None = None) -> dict[str, Any]:
         matches = [e for e in self.events.values()
                   if e.get("calendarId", "primary") == calendar_id]
         if query:
@@ -463,8 +490,15 @@ class FakeBackend:
             matches = kept
         # Real events.list returns items under "items"; matching that key name rather than
         # inventing "events" avoids one more silent divergence from the API this fake stands in
-        # for.
-        return {"items": [copy.deepcopy(e) for e in matches[:limit]]}
+        # for. Paginated the same way search_messages/list_threads are (Fix round 1, CINO
+        # 2026-09-25): without page_token, a caller told "here are 25 events" out of 300 had no
+        # way to ask for the rest - a silent undercount, not a complete answer.
+        offset = int(page_token) if page_token else 0
+        page = matches[offset:offset + limit]
+        result: dict[str, Any] = {"items": [copy.deepcopy(e) for e in page]}
+        if offset + limit < len(matches):
+            result["nextPageToken"] = str(offset + limit)
+        return result
 
     def _get_event(self, calendar_id: str, event_id: str) -> dict[str, Any]:
         event = self.events.get(event_id)
@@ -547,24 +581,47 @@ class FakeBackend:
 
     def respond_to_event(self, *, calendar_id: str, event_id: str, response: str,
                          comment: str | None = None) -> dict[str, Any]:
-        event = self._get_event(calendar_id, event_id)
-        # Responding is inherently "as someone" - the fake models that literally via
-        # get_profile() rather than guessing which attendee is "me" (e.g. via a "self" flag a
-        # fixture author would otherwise have to remember to set on every seeded event).
-        me = self.get_profile().get("emailAddress")
-        attendees = event.setdefault("attendees", [])
-        for attendee in attendees:
-            if attendee.get("email") == me:
-                attendee["responseStatus"] = response
-                if comment is not None:
-                    attendee["comment"] = comment
-                break
-        else:
-            new_attendee = {"email": me, "responseStatus": response}
-            if comment is not None:
-                new_attendee["comment"] = comment
-            attendees.append(new_attendee)
-        return copy.deepcopy(event)
+        """RSVP as the caller, and only the caller (Fix round 1, CINO 2026-09-25, correcting a
+        real defect in this method's first version). Matched on `attendee["self"] is True` -
+        the marker Google's own schema puts on the attendee entry that corresponds to the
+        calendar being queried - never on email, which fails silently for an alias, a
+        delegated calendar, or a `sendAs` address, all ordinary.
+
+        Refuses rather than invents an attendee. The first version of this method appended a
+        brand-new attendee entry when no existing one matched `me` - that is not accepting an
+        invitation, it is writing yourself onto the organiser's copy of a meeting you were
+        never invited to. Two distinct refusals, because they are different facts about the
+        event: no attendee list at all means this is not an invitation in the first place (an
+        entry on a calendar, not something to accept or decline - delete it instead); an
+        attendee list that exists but does not include the caller means the caller genuinely
+        was not invited, and responding on someone else's behalf is not this server's call to
+        make.
+
+        Writes back only `attendees` (`update_event`'s patch semantics - "only keys present in
+        body are replaced" - do the rest), under the etag this same read just obtained, so a
+        change to the event between the read and this write is a refusal (`ConflictError` from
+        `update_event`), not a silent overwrite. `send_updates="none"`: responding is not an
+        edit to the meeting, and nobody needs mail about it.
+        """
+        event = self.get_event(calendar_id=calendar_id, event_id=event_id)  # a copy + its etag
+        attendees = event.get("attendees") or []
+        if not attendees:
+            raise UnsupportedOperation(
+                f"event {event_id!r} has no attendees at all - it is not an invitation, so "
+                f"there is nothing to accept or decline. Delete the event instead if you no "
+                f"longer want it on your calendar.")
+        me_attendee = next((a for a in attendees if a.get("self")), None)
+        if me_attendee is None:
+            raise UnsupportedOperation(
+                f"you are not among the {len(attendees)} attendee(s) on event {event_id!r}. "
+                f"Responding on another attendee's behalf is not something this server will "
+                f"do.")
+        me_attendee["responseStatus"] = response
+        if comment is not None:
+            me_attendee["comment"] = comment
+        return self.update_event(calendar_id=calendar_id, event_id=event_id,
+                                 body={"attendees": attendees}, send_updates="none",
+                                 etag=event.get("etag"))
 
     def delete_event(self, *, calendar_id: str, event_id: str,
                      send_updates: str = "all") -> dict[str, Any]:
@@ -721,10 +778,13 @@ class ApiBackend:
     def get_thread(self, *, thread_id: str, fmt: str = "full") -> dict[str, Any]:
         return self._mail(self._gmail.users().threads().get, id=thread_id, format=fmt)
 
-    def list_threads(self, *, query: str | None = None, limit: int = 25) -> dict[str, Any]:
+    def list_threads(self, *, query: str | None = None, limit: int = 25,
+                     page_token: str | None = None) -> dict[str, Any]:
         kwargs: dict[str, Any] = {"maxResults": limit}
         if query:
             kwargs["q"] = query
+        if page_token:
+            kwargs["pageToken"] = page_token
         return self._mail(self._gmail.users().threads().list, **kwargs)
 
     def get_attachment(self, *, message_id: str, attachment_id: str) -> dict[str, Any]:
@@ -855,7 +915,7 @@ class ApiBackend:
 
     def list_events(self, *, calendar_id: str = "primary", time_min: str | None = None,
                     time_max: str | None = None, query: str | None = None,
-                    limit: int = 25) -> dict[str, Any]:
+                    limit: int = 25, page_token: str | None = None) -> dict[str, Any]:
         # timeMin/timeMax/q are server-side parameters here, not client-side filters - Google's
         # own overlap semantics for timeMin/timeMax (documented, and the same ones FakeBackend
         # reproduces for the offline suite) apply on its servers. Passed through unchanged
@@ -867,6 +927,8 @@ class ApiBackend:
             kwargs["timeMax"] = time_max
         if query:
             kwargs["q"] = query
+        if page_token:
+            kwargs["pageToken"] = page_token
         return self._cal_execute(self._cal.events().list(**kwargs))
 
     def get_event(self, *, calendar_id: str, event_id: str) -> dict[str, Any]:
@@ -899,28 +961,49 @@ class ApiBackend:
 
     def respond_to_event(self, *, calendar_id: str, event_id: str, response: str,
                          comment: str | None = None) -> dict[str, Any]:
-        # No native "RSVP" endpoint exists on the real Calendar API - responding is a
-        # read-modify-write against the `attendees` array, same shape FakeBackend models:
-        # find the caller's own attendee entry (via get_profile(), not a guessed "self" flag),
-        # update it, PATCH the whole array back. `events.patch` replaces an array field
-        # wholesale rather than merging one element into it, so the full list has to travel
-        # both ways.
-        me = self.get_profile().get("emailAddress")
+        """No native "RSVP" endpoint exists on the real Calendar API - responding is a
+        read-modify-write against the `attendees` array, same shape and same refusals as
+        `FakeBackend.respond_to_event` (see its docstring for the full reasoning; the two must
+        agree exactly - the offline suite otherwise tests behaviour production does not have).
+
+        Matched on `attendee.get("self")`, never on email: Google marks the attendee
+        corresponding to the calendar being queried with `"self": true`, and that is the
+        authoritative marker - email matching breaks for an alias, a delegated calendar, or a
+        `sendAs` address. No attendee list at all -> not an invitation, `UnsupportedOperation`
+        naming the event and pointing at delete instead. An attendee list that exists but does
+        not include `self` -> genuinely not invited, `UnsupportedOperation` refusing to respond
+        on someone else's behalf. `getProfile` is not called at all - the `self` marker is
+        already on the read, so this needs one fewer round trip than the email-matching version
+        it replaces.
+
+        The patch body is `{"attendees": attendees}` only - never the whole event, which would
+        silently turn a response into an edit and race whoever moved the meeting - carries the
+        etag this same read obtained as `If-Match` (a change between read and write becomes a
+        412 -> `ConflictError`, not a silent overwrite), and sends with `sendUpdates="none"`:
+        responding is not an edit to the meeting, and nobody needs mail about it.
+        """
         event = self.get_event(calendar_id=calendar_id, event_id=event_id)
-        attendees = event.setdefault("attendees", [])
-        for attendee in attendees:
-            if attendee.get("email") == me:
-                attendee["responseStatus"] = response
-                if comment is not None:
-                    attendee["comment"] = comment
-                break
-        else:
-            new_attendee: dict[str, Any] = {"email": me, "responseStatus": response}
-            if comment is not None:
-                new_attendee["comment"] = comment
-            attendees.append(new_attendee)
-        return self._cal_execute(self._cal.events().patch(
-            calendarId=calendar_id, eventId=event_id, body={"attendees": attendees}))
+        attendees = event.get("attendees") or []
+        if not attendees:
+            raise UnsupportedOperation(
+                f"event {event_id!r} has no attendees at all - it is not an invitation, so "
+                f"there is nothing to accept or decline. Delete the event instead if you no "
+                f"longer want it on your calendar.")
+        me_attendee = next((a for a in attendees if a.get("self")), None)
+        if me_attendee is None:
+            raise UnsupportedOperation(
+                f"you are not among the {len(attendees)} attendee(s) on event {event_id!r}. "
+                f"Responding on another attendee's behalf is not something this server will "
+                f"do.")
+        me_attendee["responseStatus"] = response
+        if comment is not None:
+            me_attendee["comment"] = comment
+        req = self._cal.events().patch(calendarId=calendar_id, eventId=event_id,
+                                       body={"attendees": attendees}, sendUpdates="none")
+        etag = event.get("etag")
+        if etag:
+            req.headers["If-Match"] = etag
+        return self._cal_execute(req)
 
     def delete_event(self, *, calendar_id: str, event_id: str,
                      send_updates: str = "all") -> dict[str, Any]:

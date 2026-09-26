@@ -9,6 +9,7 @@ from csa_google_gmail_calendar.exceptions import (
     AuthError,
     ConflictError,
     NotFoundError,
+    UnsupportedOperation,
 )
 
 
@@ -224,3 +225,83 @@ def test_send_message_under_the_threshold_is_sent_normally():
     rec = []
     ApiBackend(_Chain(rec), _Chain([])).send_message(raw="c2hvcnQ=")
     assert rec[0][1]["body"] == {"raw": "c2hvcnQ="}
+
+
+# --- respond_to_event: Fix round 1 (CINO 2026-09-25) -------------------------------------
+#
+# Same contract as FakeBackend.respond_to_event - see its docstring in backend.py. rec[0] is
+# always the read (events.get), rec[1] the write (events.patch), since respond_to_event does
+# exactly one of each in that order.
+
+def test_respond_to_event_patches_only_attendees_with_if_match_and_send_updates_none():
+    seeded_event = {
+        "id": "e1", "etag": '"7"',
+        "attendees": [
+            {"email": "me@example.com", "self": True, "responseStatus": "needsAction"},
+            {"email": "other@example.com", "responseStatus": "needsAction"},
+        ],
+    }
+    rec = []
+    cal = _Chain(rec, results={"events.get": seeded_event})
+    ApiBackend(_Chain([]), cal).respond_to_event(
+        calendar_id="primary", event_id="e1", response="accepted", comment="see you there")
+
+    name, kwargs, headers = rec[1]
+    assert name == "events.patch"
+    assert list(kwargs["body"].keys()) == ["attendees"]
+    attendees = {a["email"]: a for a in kwargs["body"]["attendees"]}
+    assert attendees["me@example.com"]["responseStatus"] == "accepted"
+    assert attendees["me@example.com"]["comment"] == "see you there"
+    # The other attendee is untouched - no responseStatus change, no comment added.
+    assert attendees["other@example.com"]["responseStatus"] == "needsAction"
+    assert "comment" not in attendees["other@example.com"]
+    assert kwargs["sendUpdates"] == "none"
+    assert headers["If-Match"] == '"7"'
+
+
+def test_respond_to_event_with_no_self_attendee_refuses_and_never_patches():
+    seeded_event = {
+        "id": "e1", "etag": '"1"',
+        "attendees": [{"email": "a@example.com", "responseStatus": "needsAction"},
+                      {"email": "b@example.com", "responseStatus": "needsAction"}],
+    }
+    rec = []
+    cal = _Chain(rec, results={"events.get": seeded_event})
+    with pytest.raises(UnsupportedOperation, match="not among the 2 attendee"):
+        ApiBackend(_Chain([]), cal).respond_to_event(
+            calendar_id="primary", event_id="e1", response="accepted")
+    assert len(rec) == 1  # only the read happened - the write was never sent
+
+
+def test_respond_to_event_with_no_attendees_at_all_refuses_with_a_different_message():
+    seeded_event = {"id": "e1", "etag": '"1"'}
+    rec = []
+    cal = _Chain(rec, results={"events.get": seeded_event})
+    with pytest.raises(UnsupportedOperation, match="no attendees at all"):
+        ApiBackend(_Chain([]), cal).respond_to_event(
+            calendar_id="primary", event_id="e1", response="accepted")
+    assert len(rec) == 1
+
+
+def test_respond_to_event_omits_if_match_when_the_read_event_has_no_etag():
+    seeded_event = {"id": "e1", "attendees": [{"email": "me@example.com", "self": True}]}
+    rec = []
+    cal = _Chain(rec, results={"events.get": seeded_event})
+    ApiBackend(_Chain([]), cal).respond_to_event(
+        calendar_id="primary", event_id="e1", response="accepted")
+    _, _, headers = rec[1]
+    assert "If-Match" not in headers
+
+
+# --- list_events / list_threads pagination: Fix round 1 (CINO 2026-09-25) ----------------
+
+def test_list_events_passes_through_page_token():
+    rec = []
+    ApiBackend(_Chain([]), _Chain(rec)).list_events(calendar_id="primary", page_token="tok1")
+    assert rec[0][1]["pageToken"] == "tok1"
+
+
+def test_list_threads_passes_through_page_token():
+    rec = []
+    ApiBackend(_Chain(rec), _Chain([])).list_threads(page_token="tok2")
+    assert rec[0][1]["pageToken"] == "tok2"

@@ -1,7 +1,7 @@
 import pytest
 
 from csa_google_gmail_calendar.backend import ApiBackend, Backend, FakeBackend
-from csa_google_gmail_calendar.exceptions import NotFoundError
+from csa_google_gmail_calendar.exceptions import ConflictError, NotFoundError, UnsupportedOperation
 
 
 def test_fake_implements_every_protocol_method():
@@ -153,3 +153,130 @@ def test_freebusy_interval_missing_start_or_end_raises_and_names_the_interval():
     message = str(excinfo.value)
     assert "start" in message
     assert "primary" in message
+
+
+# --- respond_to_event: Fix round 1 (CINO 2026-09-25) -------------------------------------
+#
+# Matches on attendee["self"], never on email; refuses rather than inventing an attendee.
+# See the method's own docstring in backend.py for the full reasoning.
+
+def _event_with_attendees(event_id, attendees, etag='"1"'):
+    event = _event(event_id, {"dateTime": "2026-10-01T09:00:00Z"},
+                   {"dateTime": "2026-10-01T10:00:00Z"})
+    event["attendees"] = attendees
+    event["etag"] = etag
+    return event
+
+
+def test_respond_to_event_accepting_sets_only_the_callers_own_status():
+    event = _event_with_attendees("e1", [
+        {"email": "me@example.com", "self": True, "responseStatus": "needsAction"},
+        {"email": "other@example.com", "responseStatus": "needsAction"},
+    ])
+    fake = FakeBackend(events={"e1": event})
+    result = fake.respond_to_event(calendar_id="primary", event_id="e1", response="accepted",
+                                   comment="see you there")
+    attendees = {a["email"]: a for a in result["attendees"]}
+    assert attendees["me@example.com"]["responseStatus"] == "accepted"
+    assert attendees["me@example.com"]["comment"] == "see you there"
+
+
+def test_respond_to_event_does_not_touch_another_attendees_status():
+    event = _event_with_attendees("e1", [
+        {"email": "me@example.com", "self": True, "responseStatus": "needsAction"},
+        {"email": "other@example.com", "responseStatus": "needsAction"},
+    ])
+    fake = FakeBackend(events={"e1": event})
+    result = fake.respond_to_event(calendar_id="primary", event_id="e1", response="declined")
+    attendees = {a["email"]: a for a in result["attendees"]}
+    assert attendees["other@example.com"]["responseStatus"] == "needsAction"
+    assert "comment" not in attendees["other@example.com"]
+
+
+def test_respond_to_event_with_no_self_attendee_refuses():
+    """Genuinely not invited. Responding on someone else's behalf is not this server's call -
+    it must refuse, not append a new attendee entry (the defect this fix corrects)."""
+    event = _event_with_attendees("e1", [
+        {"email": "someone-else@example.com", "responseStatus": "needsAction"},
+        {"email": "another@example.com", "responseStatus": "needsAction"},
+    ])
+    fake = FakeBackend(events={"e1": event})
+    with pytest.raises(UnsupportedOperation, match="not among the 2 attendee"):
+        fake.respond_to_event(calendar_id="primary", event_id="e1", response="accepted")
+    # And nobody was added.
+    assert len(fake.events["e1"]["attendees"]) == 2
+
+
+def test_respond_to_event_with_no_attendees_at_all_refuses_with_a_different_message():
+    """No attendee list is not an invitation - it's an entry on a calendar. The message must
+    say something distinct from "you're not among the attendees" (there are none to be among),
+    and point at delete rather than decline."""
+    event = _event("e1", {"dateTime": "2026-10-01T09:00:00Z"},
+                    {"dateTime": "2026-10-01T10:00:00Z"})
+    fake = FakeBackend(events={"e1": event})
+    with pytest.raises(UnsupportedOperation, match="no attendees at all"):
+        fake.respond_to_event(calendar_id="primary", event_id="e1", response="accepted")
+
+
+def test_respond_to_event_carries_the_read_etag_as_the_write_etag():
+    event = _event_with_attendees("e1", [
+        {"email": "me@example.com", "self": True, "responseStatus": "needsAction"},
+    ], etag='"7"')
+    fake = FakeBackend(events={"e1": event})
+    calls = []
+    original_update_event = fake.update_event
+
+    def spy(**kwargs):
+        calls.append(kwargs)
+        return original_update_event(**kwargs)
+    fake.update_event = spy
+
+    fake.respond_to_event(calendar_id="primary", event_id="e1", response="accepted")
+
+    assert calls[0]["etag"] == '"7"'
+    assert calls[0]["send_updates"] == "none"
+    assert list(calls[0]["body"].keys()) == ["attendees"]
+
+
+def test_respond_to_event_refuses_when_the_event_changed_between_read_and_write():
+    """A change landing in the read/write gap must be a refusal, not a silent overwrite."""
+    event = _event_with_attendees("e1", [
+        {"email": "me@example.com", "self": True, "responseStatus": "needsAction"},
+    ], etag='"1"')
+    fake = FakeBackend(events={"e1": event})
+    original_get_event = fake.get_event
+
+    def get_event_then_mutate(**kwargs):
+        result = original_get_event(**kwargs)
+        fake.events["e1"]["etag"] = '"2"'  # another writer lands in the gap
+        return result
+    fake.get_event = get_event_then_mutate
+
+    with pytest.raises(ConflictError):
+        fake.respond_to_event(calendar_id="primary", event_id="e1", response="accepted")
+
+
+# --- list_events / list_threads pagination: Fix round 1 (CINO 2026-09-25) ----------------
+
+def test_list_events_reports_a_next_page_token_when_truncated():
+    events = {f"e{i}": _event(f"e{i}", {"dateTime": "2026-10-01T09:00:00Z"},
+                              {"dateTime": "2026-10-01T10:00:00Z"}) for i in range(3)}
+    fake = FakeBackend(events=events)
+    first = fake.list_events(calendar_id="primary", limit=2)
+    assert len(first["items"]) == 2
+    assert "nextPageToken" in first
+    second = fake.list_events(calendar_id="primary", limit=2, page_token=first["nextPageToken"])
+    assert len(second["items"]) == 1
+    assert "nextPageToken" not in second
+    seen = {e["id"] for e in first["items"]} | {e["id"] for e in second["items"]}
+    assert seen == set(events)
+
+
+def test_list_threads_reports_a_next_page_token_when_truncated():
+    fake = FakeBackend(threads={"t1": {}, "t2": {}, "t3": {}})
+    first = fake.list_threads(limit=2)
+    assert len(first["threads"]) == 2
+    assert "nextPageToken" in first
+    second = fake.list_threads(limit=2, page_token=first["nextPageToken"])
+    assert len(second["threads"]) == 1
+    assert "nextPageToken" not in second
