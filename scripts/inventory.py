@@ -24,6 +24,12 @@ import pathlib
 import sys
 from collections import Counter, defaultdict
 
+# Import path: this script is invoked as `python scripts/inventory.py`, not through the
+# installed package's console entry point, so it needs src/ on sys.path even when the package
+# is also pip-installed editable (which it is, in dev).
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
+from csa_google_gmail_calendar.scopes import narrowest  # noqa: E402
+
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 SPECS = {
     "gmail": ROOT / "specs/gmail-v1-discovery.json",
@@ -42,6 +48,16 @@ def walk(resources: dict, trail: tuple[str, ...] = ()):
         for method_name, method in (node.get("methods") or {}).items():
             yield ".".join(here), method_name, method
         yield from walk(node.get("resources") or {}, here)
+
+
+def _narrowest_or_blank(api: str, scopes: list[str]) -> str:
+    """Blank rather than a guess when the lattice cannot rank anything (issue #11)."""
+    if not scopes:
+        return ""
+    try:
+        return narrowest(api, scopes)
+    except ValueError:
+        return ""
 
 
 def paging_of(method: dict) -> str:
@@ -65,7 +81,11 @@ def main() -> int:
         doc = json.loads(path.read_text())
         meta[api] = (doc.get("id"), doc.get("revision"))
         for family, method_name, m in walk(doc.get("resources") or {}):
-            scopes = [s.removeprefix(SCOPE_PREFIX) for s in (m.get("scopes") or [])]
+            # RANK/UNRANKED in scopes.py key on the full scope URL (including
+            # "https://mail.google.com/", which SCOPE_PREFIX does not match), so narrowest()
+            # must see the unstripped list. `scopes` (stripped) stays the display column.
+            scopes_full = list(m.get("scopes") or [])
+            scopes = [s.removeprefix(SCOPE_PREFIX) for s in scopes_full]
             desc = (m.get("description") or "").strip().replace("\n", " ")
             rows.append({
                 "api": api,
@@ -81,7 +101,7 @@ def main() -> int:
                 "media_download": "yes" if m.get("supportsMediaDownload") else "",
                 "media_upload": "yes" if m.get("mediaUpload") else "",
                 "scopes": " ".join(scopes),
-                "narrowest_scope": min(scopes, key=len) if scopes else "",
+                "narrowest_scope": _narrowest_or_blank(api, scopes_full),
                 "summary": desc[:300],
             })
 

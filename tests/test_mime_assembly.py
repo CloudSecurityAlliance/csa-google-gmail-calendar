@@ -1,0 +1,447 @@
+import base64
+import email
+import email.policy
+from pathlib import Path
+
+import pytest
+
+from csa_google_gmail_calendar import _mime
+from csa_google_gmail_calendar._attachments import AttachmentPolicy
+from csa_google_gmail_calendar.exceptions import PolicyError
+
+
+def _parse(raw_b64: str) -> email.message.EmailMessage:
+    # NOTE (deviation from the literal brief text): the brief's `_parse` called
+    # `email.message_from_bytes` with no `policy` argument, which defaults to legacy
+    # `compat32` and returns a plain `email.message.Message` - one that has neither
+    # `get_content()` nor `iter_attachments()`, both of which several of these tests call.
+    # Confirmed directly against this Python version: parsing without `policy=` raises
+    # `AttributeError: 'Message' object has no attribute 'get_content'` on the very first test.
+    # `policy=email.policy.default` is what `build()` itself uses to construct the message
+    # (via plain `EmailMessage()`), so parsing with the same policy is what actually round-trips
+    # it, including the RFC 2047/2231 non-ASCII decoding several tests below depend on.
+    return email.message_from_bytes(
+        base64.urlsafe_b64decode(raw_b64 + "=" * (-len(raw_b64) % 4)),
+        policy=email.policy.default,
+    )
+
+
+def test_a_plain_message_round_trips():
+    msg = _parse(_mime.build(["a@example.com"], "Subject here", "Body here"))
+    assert msg["To"] == "a@example.com" and msg["Subject"] == "Subject here"
+    assert "Body here" in msg.get_content()
+
+
+def test_multiple_recipients_are_comma_joined():
+    msg = _parse(_mime.build(["a@example.com", "b@example.org"], "s", "b"))
+    assert msg["To"] == "a@example.com, b@example.org"
+
+
+def test_cc_is_set_and_bcc_is_also_a_header():
+    """Gmail strips Bcc on send. It must still be present, or the recipient never gets it."""
+    msg = _parse(_mime.build(["a@example.com"], "s", "b",
+                             cc=["c@example.com"], bcc=["d@example.com"]))
+    assert msg["Cc"] == "c@example.com" and msg["Bcc"] == "d@example.com"
+
+
+def test_reply_headers_are_set_so_the_thread_holds_together():
+    msg = _parse(_mime.build(["a@example.com"], "Re: s", "b",
+                             in_reply_to="<x@mail.example.com>",
+                             references="<w@mail.example.com> <x@mail.example.com>"))
+    assert msg["In-Reply-To"] == "<x@mail.example.com>"
+    assert "<w@mail.example.com>" in msg["References"]
+
+
+def test_an_attachment_becomes_a_part_with_its_filename(tmp_path):
+    d = tmp_path / "a"
+    d.mkdir()
+    (d / "r.pdf").write_bytes(b"%PDF-1.4 x")
+    msg = _parse(_mime.build(["a@example.com"], "s", "b", attachments=["r.pdf"],
+                             attach_policy=AttachmentPolicy(str(d))))
+    names = [p.get_filename() for p in msg.iter_attachments()]
+    assert names == ["r.pdf"]
+
+
+def test_attachment_mime_type_is_guessed_from_the_extension(tmp_path):
+    d = tmp_path / "a"
+    d.mkdir()
+    (d / "r.pdf").write_bytes(b"%PDF-1.4 x")
+    msg = _parse(_mime.build(["a@example.com"], "s", "b", attachments=["r.pdf"],
+                             attach_policy=AttachmentPolicy(str(d))))
+    assert next(msg.iter_attachments()).get_content_type() == "application/pdf"
+
+
+def test_an_unknown_extension_falls_back_to_octet_stream(tmp_path):
+    d = tmp_path / "a"
+    d.mkdir()
+    (d / "x.zzz").write_bytes(b"data")
+    msg = _parse(_mime.build(["a@example.com"], "s", "b", attachments=["x.zzz"],
+                             attach_policy=AttachmentPolicy(str(d))))
+    assert next(msg.iter_attachments()).get_content_type() == "application/octet-stream"
+
+
+def test_attachments_without_a_policy_are_refused():
+    with pytest.raises(PolicyError, match="CSA_GGC_ATTACH_DIR"):
+        _mime.build(["a@example.com"], "s", "b", attachments=["x.pdf"])
+
+
+def test_over_the_message_ceiling_is_refused_with_both_numbers(tmp_path):
+    """REVIEW FOCUS #5. Google 413s; the refusal must say how big it was and what the cap is."""
+    d = tmp_path / "a"
+    d.mkdir()
+    (d / "big.bin").write_bytes(b"\0" * (26 * 1024 * 1024))
+    with pytest.raises(PolicyError, match=r"25|26"):
+        _mime.build(["a@example.com"], "s", "b", attachments=["big.bin"],
+                    attach_policy=AttachmentPolicy(str(d)))
+
+
+def test_base64_overhead_counts_toward_the_ceiling(tmp_path):
+    """A 19 MB file is over the 25 MB ceiling once RFC822's single base64 pass is counted
+    (19 x ~1.35 ~= 25.7 MB - see the module docstring's measured table) - checking the file
+    size alone passes it and Google then rejects the send, which is a worse place to find out.
+    """
+    d = tmp_path / "a"
+    d.mkdir()
+    (d / "big.bin").write_bytes(b"\0" * (19 * 1024 * 1024))
+    with pytest.raises(PolicyError, match="25"):
+        _mime.build(["a@example.com"], "s", "b", attachments=["big.bin"],
+                    attach_policy=AttachmentPolicy(str(d)))
+
+
+def test_a_file_comfortably_under_the_rfc822_boundary_is_accepted(tmp_path):
+    """REGRESSION for the first review round: this module used to compare the API `raw`
+    payload (~1.80x the file) against `MESSAGE_LIMIT`, which caps files at ~13.7 MB instead of
+    the ~18.2 MB Gmail's own 25 MB RFC822 limit actually allows. A 15 MB file (RFC822 ~= 20.3 MB)
+    must be ACCEPTED, not refused with a message that reads as nonsense ("15 MB is over 25 MB").
+    """
+    d = tmp_path / "a"
+    d.mkdir()
+    (d / "ok.bin").write_bytes(b"\0" * (15 * 1024 * 1024))
+    msg = _parse(_mime.build(["a@example.com"], "s", "b", attachments=["ok.bin"],
+                             attach_policy=AttachmentPolicy(str(d))))
+    assert next(msg.iter_attachments()).get_filename() == "ok.bin"
+
+
+def test_a_file_just_over_the_rfc822_boundary_is_refused(tmp_path):
+    """The other side of the same boundary: 18 MB (RFC822 ~= 24.3 MB) still fits; 19 MB
+    (RFC822 ~= 25.7 MB) does not. Together with the 15 MB acceptance test above, this pins the
+    real ~18.5 MB crossover rather than the ~13.7 MB the pre-fix comparison produced."""
+    d = tmp_path / "a"
+    d.mkdir()
+    (d / "fits.bin").write_bytes(b"\0" * (18 * 1024 * 1024))
+    _mime.build(["a@example.com"], "s", "b", attachments=["fits.bin"],
+               attach_policy=AttachmentPolicy(str(d)))  # must not raise
+
+    (d / "too_big.bin").write_bytes(b"\0" * (19 * 1024 * 1024))
+    with pytest.raises(PolicyError, match="25"):
+        _mime.build(["a@example.com"], "s", "b", attachments=["too_big.bin"],
+                    attach_policy=AttachmentPolicy(str(d)))
+
+
+def test_the_ceiling_is_refused_before_the_attachment_is_read(tmp_path, monkeypatch):
+    """The point of the whole exercise: a 10 GB (simulated) file must never be opened. Patch
+    `Path.read_bytes` to explode if called, and prove the oversize refusal happens without it."""
+    d = tmp_path / "a"
+    d.mkdir()
+    (d / "huge.bin").write_bytes(b"\0" * (30 * 1024 * 1024))  # a real, but modest, stand-in
+
+    real_read_bytes = Path.read_bytes
+
+    def _boom(self):
+        raise AssertionError(f"read_bytes() called on {self} - the early size check did not "
+                             f"prevent the read")
+
+    monkeypatch.setattr(Path, "read_bytes", _boom)
+    try:
+        with pytest.raises(PolicyError, match="25"):
+            _mime.build(["a@example.com"], "s", "b", attachments=["huge.bin"],
+                        attach_policy=AttachmentPolicy(str(d)))
+    finally:
+        monkeypatch.setattr(Path, "read_bytes", real_read_bytes)
+
+
+def test_the_post_assembly_check_still_catches_a_wrong_estimate(tmp_path, monkeypatch):
+    """Belt-and-braces: force the pre-read estimate to (wrongly) say "fine" and prove the
+    final, post-assembly measurement is still there to catch an oversized message anyway."""
+    d = tmp_path / "a"
+    d.mkdir()
+    (d / "big.bin").write_bytes(b"\0" * (26 * 1024 * 1024))
+    monkeypatch.setattr(_mime, "_estimate_rfc822_size", lambda **_: 0)
+    with pytest.raises(PolicyError, match="assembled message"):
+        _mime.build(["a@example.com"], "s", "b", attachments=["big.bin"],
+                    attach_policy=AttachmentPolicy(str(d)))
+
+
+def test_a_file_deleted_between_the_stat_and_the_read_is_a_policyerror_not_a_bare_oserror(
+    tmp_path, monkeypatch,
+):
+    """FIX 1 (fix round 2). The size check runs on a `stat()`; the content comes from a
+    SEPARATE `read_bytes()` moments later - the file can vanish (or be swapped) in the gap
+    between them. Every other failure in this module is translated to `PolicyError` (header
+    injection, blank recipients, oversize, missing policy); a bare `FileNotFoundError` escaping
+    here would be the one exception to that. Simulated by deleting the file immediately before
+    the real `read_bytes()` call it is patched around - Task 5's allowlist still bounds what
+    path could ever have been reached, so this is a confusing error in a benign race, not a
+    security hole.
+    """
+    d = tmp_path / "a"
+    d.mkdir()
+    (d / "r.pdf").write_bytes(b"%PDF-1.4 x")
+
+    real_read_bytes = Path.read_bytes
+
+    def _vanish_then_read(self: Path) -> bytes:
+        if self.name == "r.pdf":
+            self.unlink()
+        return real_read_bytes(self)
+
+    monkeypatch.setattr(Path, "read_bytes", _vanish_then_read)
+    with pytest.raises(PolicyError, match="changed or disappeared"):
+        _mime.build(["a@example.com"], "s", "b", attachments=["r.pdf"],
+                    attach_policy=AttachmentPolicy(str(d)))
+
+
+def test_the_estimate_stays_conservative_with_many_attachments_and_a_long_cjk_filename(
+    tmp_path,
+):
+    """FIX 3 (fix round 2). `_FIXED_OVERHEAD_BYTES` / `_PER_ATTACHMENT_OVERHEAD_BYTES` were
+    hand-estimated, not derived from a measured worst case. Stressed here with the two things
+    most likely to break a generous-but-untested constant: 20 attachments near the message
+    ceiling (so per-part overhead is paid 20 times over, not once) and one long CJK filename
+    (RFC 2231 percent-encodes each UTF-8 byte, so a non-ASCII filename's encoded form can run
+    several times its character count). Compares the ESTIMATE directly against the REAL
+    assembled RFC822 size for the identical inputs - the direction the whole design depends on
+    is estimate >= actual, and if this ever goes the other way that is a real finding: raise
+    the constants, don't loosen this assertion.
+    """
+    d = tmp_path / "a"
+    d.mkdir()
+    long_cjk_name = ("日本語のとても長いファイル名" * 5) + ".pdf"  # 74 chars, 214 UTF-8 bytes
+    paths = []
+    per_file = int(0.85 * 1024 * 1024)  # 19 x ~0.85 MB + 1 MB CJK-named file =~ 17.1 MB total,
+    for i in range(19):                # deliberately close to the 25 MB ceiling
+        name = f"attachment-{i}.bin"
+        (d / name).write_bytes(b"\0" * per_file)
+        paths.append(name)
+    (d / long_cjk_name).write_bytes(b"\0" * (1024 * 1024))
+    paths.append(long_cjk_name)
+
+    sizes = [(d / p).stat().st_size for p in paths]
+    header_bytes = _mime._utf8_len("s", "b", None, "a@example.com", "", "", None, None, None)
+    estimated = _mime._estimate_rfc822_size(header_bytes=header_bytes, attachment_sizes=sizes)
+
+    raw_b64 = _mime.build(["a@example.com"], "s", "b", attachments=paths,
+                          attach_policy=AttachmentPolicy(str(d)))
+    actual = len(base64.urlsafe_b64decode(raw_b64 + "=" * (-len(raw_b64) % 4)))
+
+    assert estimated >= actual, (
+        f"estimate ({estimated} bytes) fell BELOW the real assembled size ({actual} bytes) for "
+        f"20 attachments plus a long CJK filename - the overhead constants under-count this "
+        f"case; raise _FIXED_OVERHEAD_BYTES / _PER_ATTACHMENT_OVERHEAD_BYTES rather than "
+        f"loosening this assertion.")
+
+
+def test_the_post_assembly_guard_measures_rfc822_not_the_api_raw_payload(tmp_path, monkeypatch):
+    """REGRESSION for the first review round: the final guard must measure `msg.as_bytes()`,
+    not `base64.urlsafe_b64encode` of it - the latter is bigger again (see the module
+    docstring's measured table) and would make this guard describe the wrong size. Forcing the
+    pre-read estimate to say "fine" isolates the final guard so its own refusal message can be
+    checked directly: for a 20 MB file the RFC822 size is ~27 MB (over the 25 MB limit, so this
+    still refuses) but the API raw payload would be ~36 MB - the message must report the
+    former, not the latter.
+    """
+    d = tmp_path / "a"
+    d.mkdir()
+    (d / "big.bin").write_bytes(b"\0" * (20 * 1024 * 1024))
+    monkeypatch.setattr(_mime, "_estimate_rfc822_size", lambda **_: 0)
+    with pytest.raises(PolicyError, match="27") as excinfo:
+        _mime.build(["a@example.com"], "s", "b", attachments=["big.bin"],
+                    attach_policy=AttachmentPolicy(str(d)))
+    assert "36" not in str(excinfo.value)
+
+
+def test_an_html_alternative_produces_a_multipart_alternative():
+    msg = _parse(_mime.build(["a@example.com"], "s", "plain", html_body="<p>rich</p>"))
+    assert msg.get_content_type() == "multipart/alternative"
+
+
+def test_result_is_urlsafe_base64_with_no_plus_or_slash():
+    raw = _mime.build(["a@example.com"], "s", "b" * 500)
+    assert "+" not in raw and "/" not in raw
+
+
+# --- Header injection: the brief's most likely real vulnerability, made deliberate and tested
+# rather than left as an accident of whichever `email` version happens to be installed. ---
+
+def test_a_crlf_in_the_subject_is_refused_not_injected():
+    with pytest.raises(PolicyError, match="line break"):
+        _mime.build(["a@example.com"], "evil\r\nBcc: attacker@example.com", "b")
+
+
+def test_a_crlf_in_a_recipient_is_refused_not_injected():
+    with pytest.raises(PolicyError, match="line break"):
+        _mime.build(["a@example.com", "evil\r\nBcc: attacker@example.com"], "s", "b")
+
+
+def test_a_crlf_in_cc_is_refused_not_injected():
+    with pytest.raises(PolicyError, match="line break"):
+        _mime.build(["a@example.com"], "s", "b", cc=["evil\r\nX-Injected: true"])
+
+
+def test_a_bare_lf_in_from_addr_is_refused_not_injected():
+    with pytest.raises(PolicyError, match="line break"):
+        _mime.build(["a@example.com"], "s", "b", from_addr="me@example.com\nX-Injected: true")
+
+
+def test_the_default_email_policy_is_what_makes_crlf_rejection_possible():
+    """FIX 2 (fix round 2). The four CRLF tests above only work because `EmailMessage()` -
+    unqualified, exactly as `_mime.build` constructs it - defaults to `email.policy.default`,
+    which raises `ValueError` from `__setitem__` on an embedded `\\r`/`\\n`. Nothing before this
+    test asserted that policy is actually in force: if a future change swapped in
+    `email.policy.compat32` (or built a header by string concatenation instead of
+    `msg[name] = value`), `_set_header`'s `try/except ValueError` would catch nothing and the
+    four tests above would stop raising at the point they check.
+
+    The failure mode, made concrete and verified rather than assumed: under `compat32`,
+    `msg[name] = value` accepts the CRLF-carrying value with no exception at all - stored
+    verbatim, injected header text intact - so `_set_header`'s translation is a silent no-op
+    exactly where this test proves it. (The `email` package's own Generator does independently
+    refuse to SERIALIZE that value later, at `as_bytes()`/`as_string()` time, with a completely
+    different and untranslated `email.errors.HeaderParseError` - a real safety net, but not this
+    module's, and not one `build()` catches anywhere. That a bare stdlib exception of a
+    different type would still surface downstream is not a rebuttal of the concern; it is the
+    concern - `_set_header`'s own promise, "never a bare stdlib exception past this module's
+    boundary", is exactly what a switch away from `email.policy.default` would break.)
+    """
+    assert _mime.EmailMessage().policy is email.policy.default
+
+    compat_msg = _mime.EmailMessage(policy=email.policy.compat32)
+    compat_msg["X-Test"] = "a\r\nX-Injected: true"  # no exception raised under compat32
+    assert compat_msg["X-Test"] == "a\r\nX-Injected: true"
+
+
+# --- Non-ASCII in headers and filenames: RFC 2047/2231 encoding should be automatic - verified,
+# not assumed, so a mojibake subject is caught here rather than discovered live. ---
+
+def test_non_ascii_subject_round_trips_without_mojibake():
+    subject = "日本語件名"  # "Japanese-language subject" in Japanese
+    msg = _parse(_mime.build(["a@example.com"], subject, "b"))
+    assert msg["Subject"] == subject
+
+
+def test_non_ascii_display_name_round_trips():
+    to = "José García <a@example.com>"
+    msg = _parse(_mime.build([to], "s", "b"))
+    assert "José García" in msg["To"]
+
+
+def test_non_ascii_attachment_filename_round_trips(tmp_path):
+    d = tmp_path / "a"
+    d.mkdir()
+    filename = "日本語.pdf"  # "Japanese" + .pdf
+    (d / filename).write_bytes(b"%PDF-1.4 x")
+    msg = _parse(_mime.build(["a@example.com"], "s", "b", attachments=[filename],
+                             attach_policy=AttachmentPolicy(str(d))))
+    assert next(msg.iter_attachments()).get_filename() == filename
+
+
+# --- An empty recipient list, and a recipient that is an empty string. ---
+
+def test_an_empty_recipient_list_is_refused():
+    with pytest.raises(PolicyError, match="at least one recipient"):
+        _mime.build([], "s", "b")
+
+
+def test_a_blank_string_recipient_is_refused():
+    with pytest.raises(PolicyError, match="blank"):
+        _mime.build(["a@example.com", ""], "s", "b")
+
+
+def test_a_whitespace_only_recipient_is_refused():
+    with pytest.raises(PolicyError, match="blank"):
+        _mime.build(["a@example.com", "   "], "s", "b")
+
+
+def test_a_blank_cc_recipient_is_refused():
+    with pytest.raises(PolicyError, match="blank"):
+        _mime.build(["a@example.com"], "s", "b", cc=[""])
+
+
+def test_a_blank_bcc_recipient_is_refused():
+    with pytest.raises(PolicyError, match="blank"):
+        _mime.build(["a@example.com"], "s", "b", bcc=[""])
+
+
+# --- Duplicate attachment filenames: two different paths whose basenames collide. ---
+
+def test_duplicate_attachment_basenames_are_disambiguated(tmp_path):
+    d = tmp_path / "a"
+    (d / "x").mkdir(parents=True)
+    (d / "y").mkdir()
+    (d / "x" / "report.pdf").write_bytes(b"%PDF-1.4 one")
+    (d / "y" / "report.pdf").write_bytes(b"%PDF-1.4 two")
+    msg = _parse(_mime.build(["a@example.com"], "s", "b",
+                             attachments=["x/report.pdf", "y/report.pdf"],
+                             attach_policy=AttachmentPolicy(str(d))))
+    names = [p.get_filename() for p in msg.iter_attachments()]
+    assert names == ["report.pdf", "report-2.pdf"]
+
+
+def test_three_duplicate_basenames_without_an_extension_are_each_disambiguated(tmp_path):
+    d = tmp_path / "a"
+    for sub in ("x", "y", "z"):
+        (d / sub).mkdir(parents=True)
+        (d / sub / "README").write_bytes(f"{sub}".encode())
+    msg = _parse(_mime.build(["a@example.com"], "s", "b",
+                             attachments=["x/README", "y/README", "z/README"],
+                             attach_policy=AttachmentPolicy(str(d))))
+    names = [p.get_filename() for p in msg.iter_attachments()]
+    assert names == ["README", "README-2", "README-3"]
+
+
+# --- A zero-byte attachment. ---
+
+def test_a_zero_byte_attachment_is_accepted(tmp_path):
+    d = tmp_path / "a"
+    d.mkdir()
+    (d / "empty.txt").write_bytes(b"")
+    msg = _parse(_mime.build(["a@example.com"], "s", "b", attachments=["empty.txt"],
+                             attach_policy=AttachmentPolicy(str(d))))
+    part = next(msg.iter_attachments())
+    assert part.get_filename() == "empty.txt"
+    # `.txt` guesses as `text/plain`, so `get_content()` decodes it to `str`, not `bytes` -
+    # the payload itself (what actually went over the wire) is the empty-bytes assertion that
+    # matters here.
+    assert part.get_payload(decode=True) == b""
+
+
+# --- SIMPLE_UPLOAD_LIMIT: a routing decision on the API `raw` payload (~1.80x the file), not
+# on the file itself or on the RFC822 size `MESSAGE_LIMIT` governs - see the module docstring
+# and `upload_strategy`'s own docstring for why those are three different numbers. ---
+
+def test_upload_strategy_flips_exactly_at_5_mb_of_api_payload_not_of_file():
+    """The boundary belongs to the ENCODED string `upload_strategy` is handed, not to any file
+    size - checked directly against synthetic strings so the boundary itself is pinned, with no
+    base64-expansion arithmetic in the way."""
+    just_under = "a" * (_mime.SIMPLE_UPLOAD_LIMIT - 1)
+    exactly_at = "a" * _mime.SIMPLE_UPLOAD_LIMIT
+    assert _mime.upload_strategy(just_under) == "simple"
+    assert _mime.upload_strategy(exactly_at) == "resumable"
+
+
+def test_upload_strategy_is_simple_under_the_limit():
+    raw = _mime.build(["a@example.com"], "s", "b")
+    assert _mime.upload_strategy(raw) == "simple"
+
+
+def test_upload_strategy_is_resumable_for_a_file_smaller_than_the_upload_limit_itself(tmp_path):
+    """The point the review made explicit: a 3 MB file is well under `SIMPLE_UPLOAD_LIMIT`
+    (5 MB) by itself, but its RFC822 size is ~4.05 MB and its API `raw` payload - the quantity
+    actually being routed here - is ~5.4 MB, over the limit. `upload_strategy` must key off the
+    payload it is handed, not off any file size a caller happens to know about."""
+    d = tmp_path / "a"
+    d.mkdir()
+    (d / "f.bin").write_bytes(b"\0" * (3 * 1024 * 1024))
+    raw = _mime.build(["a@example.com"], "s", "b", attachments=["f.bin"],
+                      attach_policy=AttachmentPolicy(str(d)))
+    assert _mime.upload_strategy(raw) == "resumable"

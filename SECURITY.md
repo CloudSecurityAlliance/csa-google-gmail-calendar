@@ -10,16 +10,22 @@ We will acknowledge within five working days. There is no bounty.
 
 ## What is in scope
 
-There is no `src/` yet — this repository currently holds the API inventory, the coverage analysis and
-the design. Security-relevant findings today are:
+The library and MCP server in `src/` are implemented (46 tools; only a live probe against a real
+Google account remains before this reads "battle-tested"). The whole surface is in scope,
+particularly:
 
-- **An error in the read/write or scope classification.** A method marked safe that is not is the most
-  valuable finding here.
-- **A design in `GOALS.md` that does not hold**, particularly the filter-destination allowlist and the
-  assumption that a filter forward action requires a pre-verified destination.
+- **An error in the read/write or capability/scope classification** (`policy.py`,
+  `_capabilities.py`) - a method or tool reachable under a capability it should not need is the
+  most valuable finding here.
+- **A refusal that discloses more than it should**, or a `describe_configuration`/
+  `report_a_problem` output that leaks a token, a credential, or message/thread/event content
+  where a path or a shape was meant instead.
+- **A design in `GOALS.md` that does not hold**, particularly the filter-destination allowlist and
+  the assumption that a filter forward action requires a pre-verified destination - still relevant
+  once the settings-family tools it describes are built.
 
-Once there is code, the whole surface is in scope, and the message-analysis pillar especially: **a
-message that passes analysis and is still a phish is a security defect, not a feature request.**
+The message-analysis pillar especially: **a message that passes analysis and is still a phish is
+a security defect, not a feature request.**
 
 ## The unusual property of this project
 

@@ -17,7 +17,11 @@ update_labels x message/thread, plus the spam pair) and collapses nothing. So th
 mapping is many-to-many in both directions and cannot be derived from either side.
 """
 from __future__ import annotations
-import csv, json, pathlib, sys
+
+import csv
+import json
+import pathlib
+import sys
 from collections import defaultdict
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent

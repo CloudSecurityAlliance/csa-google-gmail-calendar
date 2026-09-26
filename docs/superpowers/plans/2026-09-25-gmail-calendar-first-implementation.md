@@ -734,9 +734,9 @@ def test_body_conversion_is_disclosed_as_a_transformation():
 def test_bidi_override_codepoints_are_stripped_and_counted():
     """A RIGHT-TO-LEFT OVERRIDE can make a body render as text it does not contain."""
     p = {"mimeType": "text/plain", "headers": [],
-         "body": {"data": _b64("safe‮txt.exe")}}
+         "body": {"data": _b64("safe<U+202E>txt.exe")}}
     m = Mail(FakeBackend(messages={"m1": _msg(p)})).read_message("m1")
-    assert "‮" not in m.body_markdown
+    assert "<U+202E>" not in m.body_markdown
     assert any("bidi" in t for t in m.transformations)
 ```
 
