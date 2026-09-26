@@ -149,3 +149,48 @@ def test_disjoint_check_is_a_noop_when_either_side_is_unconfigured(tmp_path):
     check_directories_disjoint(None, DownloadPolicy(str(d)))
     check_directories_disjoint(AttachmentPolicy(None), DownloadPolicy(str(d)))
     check_directories_disjoint(AttachmentPolicy(str(d)), None)
+
+
+def test_case_variant_directories_are_told_apart_by_the_filesystem_not_by_spelling(tmp_path):
+    """FIX (blocking, final whole-branch review, CINO 2026-09-26): `Path.resolve()` does not
+    canonicalise case, so a plain `==` comparison let `.../Shared` and `.../shared` sail
+    through as "disjoint" on a case-insensitive filesystem (default macOS/APFS, this project's
+    own development platform) even though they are one directory on disk -
+    `CSA_GGC_ATTACH_DIR`/`CSA_GGC_DOWNLOAD_DIR` set to those two spellings restored exactly the
+    overwrite chain FIX 1 exists to close. `check_directories_disjoint` now asks
+    `os.path.samefile` (st_dev/st_ino), not the strings.
+
+    This test asks the FILESYSTEM which behaviour is correct here, rather than branching on
+    `sys.platform` - a case-sensitive APFS volume (macOS) or a case-insensitive mount (Linux)
+    would otherwise make a platform-sniffing version of this test assert the wrong thing on the
+    "right" platform. Case-insensitive: `Shared`/`shared` are one directory, and the pair MUST
+    be refused as the same directory. Case-sensitive: they are two genuinely different,
+    disjoint directories, and the pair MUST be allowed - a same-directory check that also
+    rejected merely-similar-looking names would be a false positive, not a fix.
+    """
+    mixed = tmp_path / "Shared"
+    mixed.mkdir()
+    lower = tmp_path / "shared"
+    case_insensitive = lower.exists()  # true only if the filesystem folded Shared -> shared too
+    if case_insensitive:
+        with pytest.raises(PolicyError, match="same directory"):
+            check_directories_disjoint(AttachmentPolicy(str(mixed)), DownloadPolicy(str(lower)))
+    else:
+        lower.mkdir()
+        check_directories_disjoint(AttachmentPolicy(str(mixed)), DownloadPolicy(str(lower)))
+
+
+def test_disjoint_check_refuses_rather_than_allows_when_a_root_vanishes_before_the_stat(tmp_path):
+    """`os.path.samefile` raises `OSError` if either path cannot be stat'd - a directory that
+    existed at `AttachmentPolicy`/`DownloadPolicy` construction but is removed before this check
+    runs. The permissive reading (let it through, since we cannot prove they collide) is exactly
+    the Critical this function exists to close, so an unstattable root must refuse too."""
+    a = tmp_path / "attach"
+    d = tmp_path / "download"
+    a.mkdir()
+    d.mkdir()
+    attach_policy = AttachmentPolicy(str(a))
+    download_policy = DownloadPolicy(str(d))
+    d.rmdir()  # vanishes after construction, before the disjointness check
+    with pytest.raises(PolicyError, match="could not confirm"):
+        check_directories_disjoint(attach_policy, download_policy)

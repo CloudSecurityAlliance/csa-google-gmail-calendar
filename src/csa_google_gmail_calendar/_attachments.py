@@ -45,6 +45,21 @@ held open across the check, so this narrows the window (nothing re-parses the un
 a second time) without closing it. Treat this as a residual risk, not a guarantee: a local
 attacker who can race the filesystem between resolve and read is out of scope for this module.
 
+**The same residual risk exists on the write side, in the other direction (documented,
+final whole-branch review, CINO 2026-09-26).** `DownloadPolicy.write` does
+`if resolved.exists(): raise` and then `resolved.write_bytes(...)` - a check, then a plain
+truncating open, with no `O_EXCL` between them. A file created at that exact path in the
+window between the two calls is silently clobbered by the write rather than triggering the
+overwrite refusal this class exists to provide. Not closed here, and, unlike the read side, not
+considered worth closing: `O_EXCL` would need dropping down to `os.open`/`os.fdopen` in place of
+`Path.write_bytes`, for a window an attacker can only race by already holding what the
+overwrite-refusal is defending against in the first place - the ability to create a
+same-named file in the download directory at a moment of their choosing, i.e. local write
+access to that directory. Someone who already has that has an easier path to the same
+end (write the file directly, no race required) than winning a race against
+`get_attachment`'s one write per call. Recorded here so the omission reads as considered, not
+overlooked - the read-side paragraph above discusses only its own direction.
+
 **Hard links are an accepted non-bound, not a bypass.** A hard link inside the root pointing at
 an outside file has no symlink target to resolve — as far as the filesystem is concerned, it
 *is* the same file, reachable under a second name that genuinely lives inside the root.
@@ -253,14 +268,36 @@ def check_directories_disjoint(attach_policy: AttachmentPolicy | None,
     somewhere `send_message` can then pick up as if the user meant to send it) - it must be
     impossible to hold, not merely discouraged, so this is called once, at server construction
     (`mcp.server.create_server`), the one place both configured roots are ever in hand together.
+
+    **Same-directory is checked with `os.path.samefile`, not `==` (fix round, final
+    whole-branch review, CINO 2026-09-26 - a real gap, verified against the shipped code, not a
+    hypothetical).** `Path.resolve()` does not canonicalise case, and a case-insensitive
+    filesystem (default on macOS/APFS, this project's own development platform) treats
+    `.../Shared` and `.../shared` as one directory on disk while `==` sees two different
+    strings - so `CSA_GGC_ATTACH_DIR=~/Mail/Attach` and `CSA_GGC_DOWNLOAD_DIR=~/Mail/attach`
+    used to sail through this check and land both variables on the same inode, restoring the
+    exact overwrite chain FIX 1 exists to close. `os.path.samefile` compares `st_dev`/`st_ino`
+    - the filesystem's own notion of identity - so it catches a case-variant the same way it
+    already would a symlink, a hard link, or a bind mount: every way two names can denote one
+    directory, not just the one this project happened to develop on. `is_relative_to` is kept
+    alongside it, not replaced - `samefile` does not subsume nesting, since a parent and its
+    child are genuinely different inodes and neither `==` nor `samefile` would ever flag that
+    pair on its own.
+
+    `samefile` raises `OSError` if either path cannot be stat'd (already guaranteed not to
+    happen for a `root` that made it through `AttachmentPolicy`/`DownloadPolicy` construction,
+    both of which require their root to exist as a directory - but a directory can still vanish
+    between that construction and this call, e.g. a racing `rmdir`). That `OSError` is treated
+    as a refusal, not silently allowed through: a directory this check cannot prove disjoint is
+    not one it can call safe, and the permissive reading is exactly the Critical this whole
+    function exists to close.
     """
     if attach_policy is None or download_policy is None:
         return
     attach_root, download_root = attach_policy.root, download_policy.root
     if attach_root is None or download_root is None:
         return
-    if (attach_root == download_root or attach_root.is_relative_to(download_root)
-            or download_root.is_relative_to(attach_root)):
+    if attach_root.is_relative_to(download_root) or download_root.is_relative_to(attach_root):
         raise PolicyError(
             f"{ENV_VAR} ({attach_root}) and {DOWNLOAD_ENV_VAR} ({download_root}) must not be "
             f"the same directory, or nested inside one another. The directory outgoing mail "
@@ -268,3 +305,20 @@ def check_directories_disjoint(attach_policy: AttachmentPolicy | None,
             f"attachments to must be disjoint - otherwise anything a stranger sends could "
             f"overwrite, or later be picked up as, a file the user meant to send. Configure "
             f"them to point at two separate directories.")
+    try:
+        same = os.path.samefile(attach_root, download_root)
+    except OSError as exc:
+        raise PolicyError(
+            f"could not confirm {ENV_VAR} ({attach_root}) and {DOWNLOAD_ENV_VAR} "
+            f"({download_root}) are different directories: {exc}. Refused rather than "
+            f"assumed disjoint - a directory this check cannot stat is not one it can prove "
+            f"safe.") from exc
+    if same:
+        raise PolicyError(
+            f"{ENV_VAR} ({attach_root}) and {DOWNLOAD_ENV_VAR} ({download_root}) name the "
+            f"same directory (confirmed by device/inode, not just by spelling - e.g. two "
+            f"names that differ only in case on a case-insensitive filesystem still land "
+            f"here). The directory outgoing mail reads attachments from and the directory "
+            f"get_attachment writes downloaded attachments to must be disjoint - otherwise "
+            f"anything a stranger sends could overwrite, or later be picked up as, a file the "
+            f"user meant to send. Configure them to point at two separate directories.")
