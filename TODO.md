@@ -41,6 +41,13 @@ Created 2026-09-16.
   steer models to `trash_*` / `mark_*_spam` instead. `scripts/coverage.py` maps both onto
   `.trash` / `.modify`; re-check that mapping if the tools disappear.
 
+## First implementation
+
+- [ ] **Execute [the first-implementation plan](docs/superpowers/plans/2026-09-25-gmail-calendar-first-implementation.md)** — 14 tasks: Gmail read/compose/send with attachments, Calendar events and invitation responses. Scope decided 2026-09-25: allowlisted local attachment paths, direct send allowed, no filters or settings.
+- [ ] **[#8](https://github.com/CloudSecurityAlliance/csa-google-gmail-calendar/issues/8) Attachments have no upload endpoint** — resolved in the plan as `CSA_GGC_ATTACH_DIR` (Task 5/6); close once those land.
+- [ ] **[#9](https://github.com/CloudSecurityAlliance/csa-google-gmail-calendar/issues/9) There is no receive** — `users.watch` omitted deliberately; `list_history` statefulness still open.
+- [ ] **[#11](https://github.com/CloudSecurityAlliance/csa-google-gmail-calendar/issues/11) `narrowest_scope` sorts by string length** — fixed by the lattice in Task 1; regenerate the inventory and coverage matrix in the same commit.
+
 ## Repo standards
 
 - [ ] **Apply [`PUBLIC-GITHUB-REPO-STANDARDS.md`](https://github.com/CloudSecurityAlliance-Internal/CINO-Platform-Engineering/blob/main/PUBLIC-GITHUB-REPO-STANDARDS.md)** once there is code to gate.
