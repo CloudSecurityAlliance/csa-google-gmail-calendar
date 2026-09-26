@@ -11,6 +11,11 @@ name rather than silently winning: the `gmail.addons.*` family is add-on-context
 `calendar.app.created` is restricted to app-created calendars, so neither is a scope this
 server would request, and neither should be able to outrank one it would.
 
+`narrowest()` answers what the API would ACCEPT for one method considered alone, never what
+this server should REQUEST across everything a capability turns on — see `auth._CAPABILITY_SCOPES`
+and carry-forward-task-9.md for the two cases (`events.get`, `events.insert`) where the narrowest
+accepted scope is unusable for how this server actually calls the method.
+
 RANK is a deliberate totalisation of what is really only a partial order. A Discovery method's
 `scopes` list is OR-alternatives — any one of them suffices — so all `narrowest()` ever needs is
 "which of these candidates is least", never a global comparison between two arbitrary scopes.
