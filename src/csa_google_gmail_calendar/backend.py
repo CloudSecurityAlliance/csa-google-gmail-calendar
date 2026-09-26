@@ -17,6 +17,7 @@ rather than the leading-underscore, copy-on-construct fields the sibling project
 from __future__ import annotations
 
 import copy
+from datetime import datetime, timezone
 from typing import Any, Protocol
 
 from .exceptions import ConflictError, NotFoundError
@@ -90,6 +91,35 @@ def _add_labels(label_ids: list[str], add: list[str] | None) -> None:
     for label in add or ():
         if label not in label_ids:
             label_ids.append(label)
+
+
+def _parse_rfc3339(value: str) -> datetime:
+    """RFC3339 to an aware datetime. Google's offset is mandatory, so a naive string
+    comparison orders 09:00-07:00 below 15:00Z when it is in fact later (Fix round 1,
+    CINO 2026-09-25 - demonstrated against `list_events`/`query_freebusy`).
+
+    `datetime.fromisoformat` did not accept a trailing `Z` until 3.11 and our floor is 3.10,
+    which is why the replacement below exists rather than relying on the parser alone.
+    """
+    return datetime.fromisoformat(value.replace("Z", "+00:00") if value.endswith("Z") else value)
+
+
+def _event_boundary(node: dict[str, Any] | None) -> datetime | None:
+    """An event's start or end as an aware datetime, or None if the node carries neither
+    `dateTime` nor `date` (a malformed event, which is let through rather than crashing the
+    whole listing over one bad fixture).
+
+    All-day events carry `{"date": "2026-10-01"}` rather than a `dateTime`. Google's own
+    convention already makes an all-day event's `end.date` the day AFTER its last day, so
+    treating a bare date as UTC midnight needs no extra adjustment - it lines up with a timed
+    event's boundary without this fake having to re-derive the exclusive-end convention itself.
+    """
+    node = node or {}
+    if "dateTime" in node:
+        return _parse_rfc3339(node["dateTime"])
+    if "date" in node:
+        return datetime.fromisoformat(node["date"]).replace(tzinfo=timezone.utc)
+    return None
 
 
 def _message_haystack(message: dict[str, Any]) -> str:
@@ -300,10 +330,13 @@ class FakeBackend:
         return self.modify_thread_labels(thread_id=thread_id, remove=["TRASH"])
 
     def mark_spam(self, *, message_id: str) -> dict[str, Any]:
-        return self.modify_message_labels(message_id=message_id, add=["SPAM"])
+        # Real Gmail moves a spammed message out of the inbox, and restores it on unmark; the
+        # double follows that rather than doing the minimal single-label edit (Fix round 1,
+        # CINO 2026-09-25).
+        return self.modify_message_labels(message_id=message_id, add=["SPAM"], remove=["INBOX"])
 
     def unmark_spam(self, *, message_id: str) -> dict[str, Any]:
-        return self.modify_message_labels(message_id=message_id, remove=["SPAM"])
+        return self.modify_message_labels(message_id=message_id, remove=["SPAM"], add=["INBOX"])
 
     def create_label(self, *, name: str) -> dict[str, Any]:
         label_id = self._next_id("Label_")
@@ -363,11 +396,6 @@ class FakeBackend:
             raise NotFoundError(calendar_id)
         return copy.deepcopy(self.calendars[calendar_id])
 
-    @staticmethod
-    def _event_time(node: dict[str, Any] | None) -> str:
-        node = node or {}
-        return node.get("dateTime") or node.get("date") or ""
-
     def list_events(self, *, calendar_id: str = "primary", time_min: str | None = None,
                     time_max: str | None = None, query: str | None = None,
                     limit: int = 25) -> dict[str, Any]:
@@ -376,10 +404,22 @@ class FakeBackend:
         if query:
             matches = [e for e in matches if query.lower() in
                       (e.get("summary", "") + " " + e.get("description", "")).lower()]
+        # Overlap test, not "the event starts inside the window" (Fix round 1, CINO
+        # 2026-09-25): the discovery document defines timeMin as an EXCLUSIVE lower bound on
+        # an event's END time, and timeMax as an EXCLUSIVE upper bound on its START time. An
+        # event already under way when the window opens, or one that outlives it, is still
+        # "in" the window under that definition. Filtering on start time alone (the previous
+        # version of this method) silently dropped every straddling and in-progress event -
+        # exactly the case Task 12's find_free_time needs right, since a meeting already under
+        # way must not be offered back as a free slot.
         if time_min:
-            matches = [e for e in matches if self._event_time(e.get("end")) >= time_min]
+            lower = _parse_rfc3339(time_min)
+            matches = [e for e in matches
+                      if (end := _event_boundary(e.get("end"))) is None or end > lower]
         if time_max:
-            matches = [e for e in matches if self._event_time(e.get("start")) <= time_max]
+            upper = _parse_rfc3339(time_max)
+            matches = [e for e in matches
+                      if (start := _event_boundary(e.get("start"))) is None or start < upper]
         # Real events.list returns items under "items"; matching that key name rather than
         # inventing "events" avoids one more silent divergence from the API this fake stands in
         # for.
@@ -396,11 +436,31 @@ class FakeBackend:
 
     def query_freebusy(self, *, time_min: str, time_max: str,
                        calendar_ids: list[str]) -> dict[str, Any]:
+        """Busy intervals per calendar, overlap-tested against `[time_min, time_max)` the same
+        way `list_events` is (Fix round 1, CINO 2026-09-25) - compared as aware datetimes via
+        `_parse_rfc3339`, not as raw strings, so an offset like `-07:00` orders correctly
+        against a `Z` bound.
+
+        Fix 4 (CINO 2026-09-25): a `calendar_id` this fake has never heard of comes back as
+        `{"busy": []}`, same as a calendar this fake knows is genuinely free - it does NOT
+        model Google's real per-calendar `errors` entry for an unknown/inaccessible calendar.
+        Deliberately not modelled: `create_event`, `list_events`, and this method already treat
+        `self.calendars` as unauthoritative (none of them require a `calendar_id` to be
+        pre-registered there - see the ruling in the Task 3 report), so there is no existing
+        notion of "known calendar" this method could check against without inventing one just
+        for itself, which would make calendar existence validated in one Backend method and
+        nowhere else. A caller must NOT read an empty `busy` list here as confirmation that the
+        calendar exists or is free in production - only as "this fake has no busy interval on
+        record for that id."
+        """
+        lower = _parse_rfc3339(time_min)
+        upper = _parse_rfc3339(time_max)
         calendars_out: dict[str, Any] = {}
         for calendar_id in calendar_ids:
             intervals = self.freebusy.get(calendar_id, [])
             overlapping = [iv for iv in intervals
-                           if iv["end"] > time_min and iv["start"] < time_max]
+                           if _parse_rfc3339(iv["end"]) > lower
+                           and _parse_rfc3339(iv["start"]) < upper]
             calendars_out[calendar_id] = {"busy": copy.deepcopy(overlapping)}
         return {"timeMin": time_min, "timeMax": time_max, "calendars": calendars_out}
 
