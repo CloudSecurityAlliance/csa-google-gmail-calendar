@@ -383,8 +383,8 @@ Replace the placeholders with your own values throughout.
 
 | | placeholder | notes |
 |---|---|---|
-| Project name | `<your-org> Gmail/Calendar MCP` | |
-| Project ID | `<your-org>-gmail-calendar-mcp` | globally unique, 6–30 chars, lowercase |
+| Project name | `<your-org> Gmail-Calendar MCP` | a `/` is rejected; `-` or `&` work |
+| Project ID | `<your-org>-gmail-calendar-mcp` | **click *Edit*** beside the auto-generated id — it is a link, not a label. Globally unique across all of Google Cloud, 6–30 chars, lowercase; a collision is rejected without explanation |
 
 ### 2. Enable the two APIs
 
@@ -420,7 +420,7 @@ If you do not have a Workspace org, you can still run this: choose **External**,
 and re-consent every 7 days, which is fine for one person and not a way to deploy to a team.
 
 **The app name is read by whoever consents**, at the moment they decide whether to hand over a
-mailbox. Use something they can resolve — `<Your Org> Gmail/Calendar MCP`, not an internal
+mailbox. Use something they can resolve — `<Your Org> Gmail-Calendar MCP`, not an internal
 codename.
 
 If the app is in Testing with an explicit scope list, add:
