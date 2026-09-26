@@ -3,7 +3,12 @@
 All notable changes to this project are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [Unreleased]
+## [0.1.0] - 2026-09-26
+
+First release. 46 tools, 686 tests at 100% coverage, and **9/9 checks against a real
+Google account** — scope minimisation, HTML-only body conversion, the attachment allowlist
+refusing a real symlink escape, a self-addressed send with an attachment, and
+`find_free_time` naming a calendar it could not read rather than reporting it free.
 
 ### Added
 
