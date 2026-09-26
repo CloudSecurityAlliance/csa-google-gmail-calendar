@@ -136,7 +136,7 @@ def register_config_tools(app: MCPServer, settings: Settings, flavour: str,
         download_directory = (str(download_policy.root)
                               if download_policy is not None and download_policy.root is not None
                               else None)
-        client_project = auth.client_project_id(settings.client_secrets)
+        client_project = auth.client_project_id(settings.client_secrets_path)
         return {
             "flavour": flavour,
             "flavour_note": (

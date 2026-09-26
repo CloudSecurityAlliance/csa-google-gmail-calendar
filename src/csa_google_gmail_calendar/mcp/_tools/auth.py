@@ -72,19 +72,19 @@ def _revoke_best_effort(creds: Credentials) -> bool:
 
 
 def _auth_status_payload(token_path: str, required: list[str],
-                         client_secrets: str | None = None) -> dict[str, Any]:
+                         client_secrets_path: str | None = None) -> dict[str, Any]:
     """No network call, ever - see `auth_status`'s own docstring for why that is the whole
     point of this function existing separately from `auth.load_cached_credentials`, which
     refreshes an expired access token over the network as part of returning usable credentials.
 
-    `client_secrets` is accepted as a parameter, not read from the environment in here, so this
+    `client_secrets_path` is accepted as a parameter, not read from the environment in here, so this
     function stays a pure function of its arguments and testable without monkeypatching process
     state - the caller (`auth_status` below) is the one place that knows to thread `settings.
-    client_secrets` through. It feeds `client_project` (`auth.client_project_id`) in every
+    client_secrets_path` through. It feeds `client_project` (`auth.client_project_id`) in every
     returned state: which Google Cloud project a credential would be (or is) issued against is
     exactly the fact a real incident showed was missing everywhere in this flow - see
     `client_project_id`'s own docstring for that incident."""
-    client_project = auth.client_project_id(client_secrets)
+    client_project = auth.client_project_id(client_secrets_path)
     if not os.path.exists(token_path):
         return {"status": "no_credential", "token_path": token_path,
                 "client_project": client_project,
@@ -139,7 +139,7 @@ def register_auth_tools(app: MCPServer, settings: Settings) -> None:
                         "detail": f"A usable credential is already cached at "
                                   f"{settings.token_path}. Pass force=true to authorize again."}
 
-        if not settings.client_secrets:
+        if not settings.client_secrets_path:
             raise ToolError(
                 "No OAuth client is configured, so a consent URL cannot be built. Set "
                 "CSA_GGC_CLIENT_SECRETS or place the client at "
@@ -148,7 +148,7 @@ def register_auth_tools(app: MCPServer, settings: Settings) -> None:
 
         loopback = start_loopback()
         try:
-            flow = build_flow(settings.client_secrets, settings.policy.enabled,
+            flow = build_flow(settings.client_secrets_path, settings.policy.enabled,
                               loopback.redirect_uri_base)
             url = consent_url(flow)
             elicitation_id = uuid.uuid4().hex
@@ -179,7 +179,7 @@ def register_auth_tools(app: MCPServer, settings: Settings) -> None:
                         "detail": "No response from the browser within 5 minutes. Call "
                                   "authenticate again when ready."}
 
-            client_project = auth.client_project_id(settings.client_secrets)
+            client_project = auth.client_project_id(settings.client_secrets_path)
             await anyio.to_thread.run_sync(
                 lambda: finish(flow, redirect, settings.token_path, client_project))
             await ctx.session.send_elicit_complete(elicitation_id)
@@ -208,7 +208,7 @@ def register_auth_tools(app: MCPServer, settings: Settings) -> None:
         reason it is here is to be the answer a consent flow never gave: which project a call
         is about to run (or already ran) against.
         """
-        return _auth_status_payload(settings.token_path, required, settings.client_secrets)
+        return _auth_status_payload(settings.token_path, required, settings.client_secrets_path)
 
     @tool(app, annotations=_LOGOUT)
     def logout() -> dict[str, Any]:

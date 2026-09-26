@@ -144,7 +144,7 @@ def start_loopback() -> Loopback:
                     _collector=collector, _thread=thread)
 
 
-def build_flow(client_secrets: str, enabled: frozenset[str], redirect_uri: str):
+def build_flow(client_secrets_path: str, enabled: frozenset[str], redirect_uri: str):
     """A google_auth_oauthlib Flow pointed at our loopback, requesting exactly what `enabled`
     needs (`auth.scopes_for`), pointed at our loopback."""
     from google_auth_oauthlib.flow import Flow
@@ -157,7 +157,7 @@ def build_flow(client_secrets: str, enabled: frozenset[str], redirect_uri: str):
     # `from_client_config`, not `from_client_secrets_file`: we read the file ourselves so a
     # UTF-8 BOM does not make a valid client unreadable and a malformed one names itself
     # (`auth.read_client_secrets`).
-    flow = Flow.from_client_config(read_client_secrets(client_secrets),
+    flow = Flow.from_client_config(read_client_secrets(client_secrets_path),
                                    scopes=scopes_for(enabled),
                                    autogenerate_code_verifier=True)
     flow.redirect_uri = redirect_uri

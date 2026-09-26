@@ -660,7 +660,7 @@ def client_project_id(path: str | None) -> str | None:
     return str(project_id) if project_id else None
 
 
-def load_credentials(client_secrets: str, token_path: str, required: list[str],
+def load_credentials(client_secrets_path: str, token_path: str, required: list[str],
                      *, force: bool = False) -> Credentials:
     """Interactive: reuse the cache, else open a browser for consent. Terminal use only.
 
@@ -679,14 +679,14 @@ def load_credentials(client_secrets: str, token_path: str, required: list[str],
     if creds and creds.expired and creds.refresh_token:
         _refresh(creds)
     else:
-        config = read_client_secrets(client_secrets)    # we open it; see read_client_secrets (#449)
+        config = read_client_secrets(client_secrets_path)    # we open it; see read_client_secrets (#449)
         creds = InstalledAppFlow.from_client_config(config, required).run_local_server(port=0)
-    # `client_project_id` re-reads `client_secrets`, tolerating exactly the same absent/
+    # `client_project_id` re-reads `client_secrets_path`, tolerating exactly the same absent/
     # malformed cases `read_client_secrets` above would already have raised on - by this point
     # that file was necessarily readable if the consent branch ran, and irrelevant if the
     # refresh branch did, so recomputing it here rather than threading a value through is the
     # simpler of the two and costs one extra, cheap, local file read.
-    _write_token(token_path, creds, client_project_id(client_secrets))
+    _write_token(token_path, creds, client_project_id(client_secrets_path))
     return creds
 
 
@@ -698,7 +698,7 @@ def load_cached_credentials(token_path: str, required: list[str]) -> Credentials
     mistake. That is a structural guarantee rather than a convention. Refreshing an expired
     token is pure HTTP with no stdout writes, so it stays on this path.
 
-    No `client_secrets` argument is needed: `to_json()` persists client_id/client_secret/
+    No `client_secrets_path` argument is needed: `to_json()` persists client_id/client_secret/
     token_uri into the cache, so a cached token is self-sufficient for refresh.
     """
     token_path = os.path.expanduser(token_path)

@@ -36,14 +36,14 @@ def test_policy_from_env_refuses_an_unknown_capability_by_name():
 def test_settings_from_env_finds_no_client_secrets_when_unset_and_default_absent(tmp_path, monkeypatch):
     monkeypatch.setattr(_config, "DEFAULT_CLIENT_SECRETS_PATH", str(tmp_path / "absent.json"))
     settings = _config.settings_from_env({}, policy.Policy())
-    assert settings.client_secrets is None
+    assert settings.client_secrets_path is None
 
 
 def test_settings_from_env_prefers_the_explicit_client_secrets_variable(tmp_path):
     explicit = tmp_path / "client_secret.json"
     explicit.write_text("{}")
     settings = _config.settings_from_env({"CSA_GGC_CLIENT_SECRETS": str(explicit)}, policy.Policy())
-    assert settings.client_secrets == str(explicit)
+    assert settings.client_secrets_path == str(explicit)
 
 
 def test_settings_required_scopes_matches_auth_scopes_for():

@@ -45,14 +45,14 @@ class Settings:
     """What the auth-lifecycle tools and the `login`/`configure` CLI paths need beyond
     `backend`/`policy`/`flavour`/`attach_policy`, which `create_server`'s own parameters cover.
 
-    `client_secrets` is **optional and never needed to start**: reading and refreshing a cached
+    `client_secrets_path` is **optional and never needed to start**: reading and refreshing a cached
     token requires no client file, because the token carries its own client_id and secret
     (`auth.load_cached_credentials`). It is used only by `authenticate` and `login`, which have
     to construct a fresh consent URL and therefore do need the client. Absent, both report how
     to obtain one; everything else works unchanged.
     """
     token_path: str
-    client_secrets: str | None
+    client_secrets_path: str | None
     policy: Policy
 
     @property
@@ -81,7 +81,7 @@ def settings_from_env(env: Mapping[str, str], policy: Policy) -> Settings:
     default = os.path.expanduser(DEFAULT_CLIENT_SECRETS_PATH)
     return Settings(
         token_path=auth.token_path_default(),
-        client_secrets=explicit or (default if os.path.exists(default) else None),
+        client_secrets_path=explicit or (default if os.path.exists(default) else None),
         policy=policy,
     )
 
@@ -140,7 +140,7 @@ def startup_warnings(settings: Settings) -> list[str]:
     if irreversible:
         out.append(f"  of those, {len(irreversible)} cannot be undone through this server: "
                    f"{', '.join(irreversible)}.")
-    if not settings.client_secrets:
+    if not settings.client_secrets_path:
         out.append(
             f"no OAuth client secrets configured ({CLIENT_SECRETS_VAR} is unset, and no file "
             f"exists at {DEFAULT_CLIENT_SECRETS_PATH}) - the `authenticate` tool and `login` "

@@ -18,7 +18,7 @@ from csa_google_gmail_calendar.policy import Policy
 
 
 def _settings(token_path: str) -> Settings:
-    return Settings(token_path=token_path, client_secrets=None, policy=Policy())
+    return Settings(token_path=token_path, client_secrets_path=None, policy=Policy())
 
 
 def test_login_reports_no_client_secrets_and_exits_2(tmp_path, monkeypatch):
@@ -38,8 +38,8 @@ def test_login_falls_back_to_the_default_client_secrets_path_when_it_exists(
     calls = []
     monkeypatch.setattr(
         auth, "load_credentials",
-        lambda client_secrets, token_path, required, force=False:
-            calls.append(client_secrets))
+        lambda client_secrets_path, token_path, required, force=False:
+            calls.append(client_secrets_path))
     rc = _login.login(_settings(str(tmp_path / "token.json")), {}, out=io.StringIO())
     assert rc == 0
     assert calls == [str(default)]
@@ -51,7 +51,7 @@ def test_login_uses_the_explicit_client_secrets_env_var(tmp_path, monkeypatch):
     monkeypatch.setattr(auth, "load_cached_credentials",
                        lambda token_path, required: (_ for _ in ()).throw(AuthError("no cred")))
     monkeypatch.setattr(auth, "load_credentials",
-                       lambda client_secrets, token_path, required, force=False: None)
+                       lambda client_secrets_path, token_path, required, force=False: None)
     out = io.StringIO()
     rc = _login.login(_settings(str(tmp_path / "token.json")),
                       {"CSA_GGC_CLIENT_SECRETS": str(secrets)}, out=out)
@@ -109,7 +109,7 @@ def test_login_prints_the_project_before_opening_the_browser(tmp_path, monkeypat
     monkeypatch.setattr(auth, "load_cached_credentials",
                        lambda token_path, required: (_ for _ in ()).throw(AuthError("gone")))
     monkeypatch.setattr(auth, "load_credentials",
-                       lambda client_secrets, token_path, required, force=False: None)
+                       lambda client_secrets_path, token_path, required, force=False: None)
     out = io.StringIO()
     rc = _login.login(_settings(str(tmp_path / "token.json")),
                       {"CSA_GGC_CLIENT_SECRETS": str(secrets)}, out=out)
@@ -126,7 +126,7 @@ def test_login_prints_unknown_when_the_project_id_cannot_be_read(tmp_path, monke
     monkeypatch.setattr(auth, "load_cached_credentials",
                        lambda token_path, required: (_ for _ in ()).throw(AuthError("gone")))
     monkeypatch.setattr(auth, "load_credentials",
-                       lambda client_secrets, token_path, required, force=False: None)
+                       lambda client_secrets_path, token_path, required, force=False: None)
     out = io.StringIO()
     rc = _login.login(_settings(str(tmp_path / "token.json")),
                       {"CSA_GGC_CLIENT_SECRETS": str(secrets)}, out=out)
@@ -142,7 +142,7 @@ def test_login_falls_through_to_consent_when_nothing_usable_is_cached(tmp_path, 
                        lambda token_path, required: (_ for _ in ()).throw(AuthError("gone")))
     monkeypatch.setattr(
         auth, "load_credentials",
-        lambda client_secrets, token_path, required, force=False: calls.append(force))
+        lambda client_secrets_path, token_path, required, force=False: calls.append(force))
     rc = _login.login(_settings(str(tmp_path / "token.json")),
                       {"CSA_GGC_CLIENT_SECRETS": str(secrets)}, out=io.StringIO())
     assert rc == 0
@@ -160,7 +160,7 @@ def test_login_force_skips_the_cached_credential_check_entirely(tmp_path, monkey
     monkeypatch.setattr(auth, "load_cached_credentials", _boom)
     monkeypatch.setattr(
         auth, "load_credentials",
-        lambda client_secrets, token_path, required, force=False: calls.append(force))
+        lambda client_secrets_path, token_path, required, force=False: calls.append(force))
     rc = _login.login(_settings(str(tmp_path / "token.json")),
                       {"CSA_GGC_CLIENT_SECRETS": str(secrets)}, force=True, out=io.StringIO())
     assert rc == 0

@@ -71,7 +71,7 @@ def _build_server_and_settings(tmp_path, monkeypatch, *, redirect: str | None = 
     secrets = tmp_path / "client_secret.json"
     secrets.write_text("{}")
     settings = Settings(token_path=str(tmp_path / "token.json"),
-                       client_secrets=str(secrets), policy=policy.Policy())
+                       client_secrets_path=str(secrets), policy=policy.Policy())
     app = MCPServer(name="test", version="0", instructions="")
     _tools.register_auth_tools(app, settings)
     return app, finished
@@ -119,7 +119,7 @@ def test_authenticate_closes_the_loopback_even_when_elicitation_raises(tmp_path,
     secrets = tmp_path / "client_secret.json"
     secrets.write_text("{}")
     settings = Settings(token_path=str(tmp_path / "token.json"),
-                       client_secrets=str(secrets), policy=policy.Policy())
+                       client_secrets_path=str(secrets), policy=policy.Policy())
     app = MCPServer(name="test", version="0", instructions="")
     _tools.register_auth_tools(app, settings)
 
@@ -176,7 +176,7 @@ def test_logout_reports_whether_server_side_revocation_was_confirmed(tmp_path, m
         '"token_uri": "https://oauth2.googleapis.com/token", "scopes": []}')
     monkeypatch.setattr(auth_tools, "_revoke_best_effort", lambda creds: False)
     from mcp.server import MCPServer
-    s = Settings(token_path=str(token_path), client_secrets=None, policy=policy.Policy())
+    s = Settings(token_path=str(token_path), client_secrets_path=None, policy=policy.Policy())
     app = MCPServer(name="test", version="0", instructions="")
     _tools.register_auth_tools(app, s)
     out = app._tool_manager.get_tool("logout").fn()
@@ -192,7 +192,7 @@ def test_logout_reports_confirmed_revocation_when_it_succeeds(tmp_path, monkeypa
         '"token_uri": "https://oauth2.googleapis.com/token", "scopes": []}')
     monkeypatch.setattr(auth_tools, "_revoke_best_effort", lambda creds: True)
     from mcp.server import MCPServer
-    s = Settings(token_path=str(token_path), client_secrets=None, policy=policy.Policy())
+    s = Settings(token_path=str(token_path), client_secrets_path=None, policy=policy.Policy())
     app = MCPServer(name="test", version="0", instructions="")
     _tools.register_auth_tools(app, s)
     out = app._tool_manager.get_tool("logout").fn()
@@ -209,7 +209,7 @@ def test_auth_status_reports_no_credential_for_an_unreadable_token_file(tmp_path
 
 
 def test_auth_status_payload_client_project_defaults_to_none_without_client_secrets(tmp_path):
-    """`_auth_status_payload` takes `client_secrets` as an optional third argument, not the
+    """`_auth_status_payload` takes `client_secrets_path` as an optional third argument, not the
     environment - a caller (like the tests above) that omits it entirely still gets a
     `client_project` key, just `None`."""
     out = auth_tools._auth_status_payload(str(tmp_path / "no-token-here.json"), [])
@@ -239,7 +239,7 @@ def test_logout_removes_a_corrupt_token_file_without_raising(tmp_path):
     token_path = tmp_path / "token.json"
     token_path.write_text("not valid json")
     from mcp.server import MCPServer
-    s = Settings(token_path=str(token_path), client_secrets=None, policy=policy.Policy())
+    s = Settings(token_path=str(token_path), client_secrets_path=None, policy=policy.Policy())
     app = MCPServer(name="test", version="0", instructions="")
     _tools.register_auth_tools(app, s)
     out = app._tool_manager.get_tool("logout").fn()

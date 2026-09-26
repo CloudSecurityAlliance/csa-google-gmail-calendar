@@ -98,11 +98,11 @@ def _token_client_id(token_path: str) -> str | None:
 def login(settings: Settings, env: Mapping[str, str], *, force: bool = False, out=None) -> int:
     """Run interactive OAuth and cache the token. Returns a process exit code."""
     out = out or sys.stdout
-    client_secrets = env.get("CSA_GGC_CLIENT_SECRETS")
-    if not client_secrets:
+    client_secrets_path = env.get("CSA_GGC_CLIENT_SECRETS")
+    if not client_secrets_path:
         default = os.path.expanduser(DEFAULT_CLIENT_SECRETS_PATH)
         if os.path.exists(default):
-            client_secrets = default
+            client_secrets_path = default
         else:
             print("No OAuth client secrets found. Looked at:\n"
                   "  $CSA_GGC_CLIENT_SECRETS  (not set)\n"
@@ -122,7 +122,7 @@ def login(settings: Settings, env: Mapping[str, str], *, force: bool = False, ou
             # issued by a *different* OAuth client. Everything then works while running
             # against the wrong project's quota and consent screen - silently. Worth naming,
             # because no error will ever surface it.
-            want, have = _client_id_of(client_secrets), _token_client_id(settings.token_path)
+            want, have = _client_id_of(client_secrets_path), _token_client_id(settings.token_path)
             if want and have and want != have:
                 print(f"Warning: the cached token was issued by a different OAuth client\n"
                       f"  cached: {have}\n  wanted: {want}\n"
@@ -137,14 +137,14 @@ def login(settings: Settings, env: Mapping[str, str], *, force: bool = False, ou
     # are checkable against each other right here, rather than only after a 403 names the
     # project a call actually ran against (see `auth.client_project_id`'s docstring for the
     # incident this is fixing).
-    project = auth.client_project_id(client_secrets)
+    project = auth.client_project_id(client_secrets_path)
     print(f"Opening a browser to authorize access to your Google Mail and Calendar.\n"
           f"  project: {project or 'unknown (could not read the project id from the client secrets)'}\n"
           f"  token cache: {settings.token_path}", file=out)
     # force=True bypasses the cache but deletes nothing: the old token is replaced only once a
     # new one exists, so a cancelled consent leaves the previous one working.
     with _branded_success_page():
-        auth.load_credentials(client_secrets, settings.token_path, required, force=force)
+        auth.load_credentials(client_secrets_path, settings.token_path, required, force=force)
     print(f"Authorized against project {project or 'unknown'}. "
           f"The MCP server can now start without prompting.", file=out)
     return 0
