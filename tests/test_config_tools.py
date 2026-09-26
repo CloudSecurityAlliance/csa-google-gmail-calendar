@@ -39,6 +39,27 @@ def test_describe_configuration_reports_no_granted_scopes_for_an_unreadable_toke
     assert out["scopes_sufficient"] is None
 
 
+def test_describe_configuration_reports_no_granted_scopes_when_the_token_file_is_unreadable(
+        tmp_path, monkeypatch):
+    """`_granted_scopes` must catch `OSError` alongside `ValueError`/`GoogleAuthError` - a file
+    that exists but cannot be read (permissions, a race, a directory where a file was
+    expected) must not raise a traceback naming the token path out of this tool."""
+    token_path = tmp_path / "unreadable-token.json"
+    token_path.write_text('{"refresh_token": "r", "client_id": "c", "client_secret": "s", '
+                         '"token_uri": "https://oauth2.googleapis.com/token", "scopes": []}')
+    # POSIX-only: chmod bits are a no-op for the owner on Windows (auth.py's own note on the
+    # same limitation) - this CI matrix is ubuntu-only, so that is a known, accepted gap here.
+    token_path.chmod(0o000)
+    monkeypatch.setenv("CSA_GGC_TOKEN_PATH", str(token_path))
+    try:
+        server = create_server(backend=None, policy=policy.Policy())
+        out = _call(server, "describe_configuration")
+        assert out["granted_scopes"] is None
+        assert out["scopes_sufficient"] is None
+    finally:
+        token_path.chmod(0o600)          # restore so pytest's own tmp_path cleanup can remove it
+
+
 def test_describe_configuration_reports_no_granted_scopes_when_nothing_is_cached(
         tmp_path, monkeypatch):
     monkeypatch.setenv("CSA_GGC_TOKEN_PATH", str(tmp_path / "token.json"))
@@ -75,15 +96,32 @@ def test_describe_configuration_reports_scopes_insufficient_when_short(tmp_path,
     assert out["scopes_sufficient"] is False
 
 
-def test_describe_configuration_never_returns_a_token_path_or_client_secrets():
+def test_describe_configuration_never_returns_the_token_path_or_token_contents(
+        tmp_path, monkeypatch):
     """The stricter bar `config.py`'s own module docstring states: this tool's output must not
     contain what a plain refusal would not already disclose, and a refusal never discloses a
-    token path."""
-    server = create_server(backend=None, policy=policy.Policy())
+    token path or a token's contents.
+
+    A test that only checks for the KEY NAME `"token_path"` cannot fail for the reason it
+    exists - this tool never returns that key regardless, so the check is vacuous. This seeds a
+    REAL, distinctively-named token file (with a recognisable sentinel inside it) and asserts
+    neither the path VALUE nor the sentinel VALUE appears anywhere in the output - a test that
+    would actually catch a future change that dumps the credential into the response."""
+    token_path = tmp_path / "a-distinctively-named-token-file-marker.json"
+    sentinel = "SENTINEL-REFRESH-TOKEN-VALUE-must-never-leak-9f3a7c"
+    token_path.write_text(
+        f'{{"refresh_token": "{sentinel}", "client_id": "c", '
+        f'"client_secret": "shh-client-secret", '
+        f'"token_uri": "https://oauth2.googleapis.com/token", '
+        f'"scopes": ["https://www.googleapis.com/auth/gmail.readonly"]}}')
+    monkeypatch.setenv("CSA_GGC_TOKEN_PATH", str(token_path))
+    monkeypatch.setenv("CSA_GGC_CLIENT_SECRETS", str(tmp_path / "client_secret.json"))
+    server = create_server(backend=None, policy=policy.Policy(frozenset({policy.MAIL_READ})))
     out = _call(server, "describe_configuration")
     blob = repr(out)
-    assert "token_path" not in blob
-    assert "client_secret" not in blob
+    assert str(token_path) not in blob
+    assert sentinel not in blob
+    assert "shh-client-secret" not in blob
 
 
 def test_describe_configuration_reports_the_attachment_directory_path_only(tmp_path):
@@ -138,7 +176,26 @@ def test_report_a_problem_contains_no_ids_or_addresses():
     out = _call(server, "report_a_problem")
     blob = repr(out)
     assert "@" not in blob            # no email address
-    assert "token" not in blob.lower() or "token_path" not in blob
+
+
+def test_report_a_problem_contains_neither_the_token_path_nor_the_tokens_own_contents(
+        tmp_path, monkeypatch):
+    """The previous version of this test asserted `"token" not in blob.lower() or "token_path"
+    not in blob` - if a token were ever present, the first clause is false and the second is
+    trivially true, so the assertion could never fail for the reason it exists. This seeds a
+    real token file with a recognisable sentinel and asserts both the path VALUE and the
+    sentinel VALUE are absent - a test that would actually catch a real leak."""
+    token_path = tmp_path / "a-distinctively-named-token-file-marker.json"
+    sentinel = "SENTINEL-REFRESH-TOKEN-VALUE-must-never-leak-9f3a7c"
+    token_path.write_text(
+        f'{{"refresh_token": "{sentinel}", "client_id": "c", "client_secret": "s", '
+        f'"token_uri": "https://oauth2.googleapis.com/token", "scopes": []}}')
+    monkeypatch.setenv("CSA_GGC_TOKEN_PATH", str(token_path))
+    server = create_server(backend=None, policy=policy.Policy())
+    out = _call(server, "report_a_problem")
+    blob = repr(out)
+    assert str(token_path) not in blob
+    assert sentinel not in blob
 
 
 def test_report_a_problem_names_the_server_version():
@@ -241,10 +298,10 @@ def test_flavour_from_env_refuses_an_unknown_value():
 
 
 def test_core_tools_is_exactly_31_per_spec_section_5():
-    """Fix round 1 (coordinator review, CINO 2026-09-26): `_flavours.py`'s own import-time
-    `assert len(CORE_TOOLS) == 31` is stripped under `python -O` - confirmed the whole suite
-    still passes with it gone. This is the same invariant as a REAL test, which `-O` cannot
-    remove: spec §5 derives exactly 31 tools as "what email needs to work"."""
+    """`_flavours.py`'s own import-time `assert len(CORE_TOOLS) == 31` is stripped under
+    `python -O` (confirmed: the whole suite still passes with it gone under `-O`). This is the
+    same invariant as a REAL test, which `-O` cannot remove: spec §5 derives exactly 31 tools
+    as "what email needs to work"."""
     assert len(_flavours.CORE_TOOLS) == 31
 
 

@@ -12,16 +12,44 @@ README = pathlib.Path(__file__).parent.parent / "README.md"
 SRC = pathlib.Path(__file__).parent.parent / "src"
 
 
-def test_readme_lists_every_tool_the_server_registers():
+def _readme_tools_table_names(readme_text: str) -> set[str]:
+    """The tool names in the GENERATED table specifically (between the `TOOLS:START`/`:END`
+    markers `scripts/generate_tool_table.py` writes), not every backticked identifier anywhere
+    in the README - a tool mentioned once in prose (or named inside another row's Description
+    cell) must not satisfy this check on the table's behalf. Only the first cell of each table
+    row counts, since that is the one column that is the tool's own name."""
+    start, end = "<!-- TOOLS:START -->", "<!-- TOOLS:END -->"
+    assert start in readme_text and end in readme_text, "README is missing the TOOLS markers"
+    table = readme_text[readme_text.index(start) + len(start):readme_text.index(end)]
+    names: set[str] = set()
+    for line in table.splitlines():
+        line = line.strip()
+        if not line.startswith("|"):
+            continue
+        cells = [c.strip() for c in line.strip("|").split("|")]
+        if not cells:
+            continue
+        m = re.fullmatch(r"`([a-z_]+)`", cells[0])
+        if m:
+            names.add(m.group(1))
+    return names
+
+
+def test_readme_tool_table_matches_the_live_registry_exactly():
     """A README tool table nobody checks is a promise that decays silently (TESTING.md).
-    Built with every capability enabled, matching `test_mcp_capabilities.py`'s own reasoning:
-    this is about the full universe of tools this server can ever register, not one
-    deployment's narrowed policy."""
+    Checked in BOTH directions against the GENERATED table specifically: a tool this server
+    registers but the table omits (the old, one-directional check), AND a tool the table still
+    lists after it stopped being registered (a tool removed, or renamed, leaving a stale row
+    behind) - the previous version of this test caught only the first. Built with every
+    capability enabled, matching `test_mcp_capabilities.py`'s own reasoning: this is about the
+    full universe of tools this server can ever register, not one deployment's narrowed
+    policy."""
     p = policy.Policy(frozenset(policy.ALL_CAPABILITIES))
     registered = {t.name for t in create_server(backend=None, policy=p)._tool_manager.list_tools()}
-    readme = README.read_text()
-    documented = set(re.findall(r"`([a-z_]+)`", readme))
-    assert not registered - documented, f"undocumented: {sorted(registered - documented)}"
+    documented = _readme_tools_table_names(README.read_text())
+    assert registered == documented, (
+        f"registered but missing from the table: {sorted(registered - documented)}; "
+        f"in the table but no longer registered: {sorted(documented - registered)}")
 
 
 def test_every_env_var_the_code_reads_is_in_the_readme():

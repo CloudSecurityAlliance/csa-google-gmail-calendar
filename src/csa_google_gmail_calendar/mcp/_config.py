@@ -7,9 +7,9 @@ rule as `../csa-google-workspace/src/csa_google_workspace/mcp/_config.py`, which
 much smaller version of. That project's `Settings` also owns allowlists, profiles and export
 directories; none of that exists here.
 
-**Correction (fix round 1, coordinator review, CINO 2026-09-26): this docstring used to claim
-`Backend` needed no per-thread provider, "because nothing here holds a non-thread-safe client
-the way `googleapiclient` does at the `Workspace` layer." That was backwards.**
+**Correction (2026-09-26): this docstring used to claim `Backend` needed no per-thread
+provider, "because nothing here holds a non-thread-safe client the way `googleapiclient` does
+at the `Workspace` layer." That was backwards.**
 `googleapiclient` clients are NOT thread-safe, full stop - the sibling's `WorkspaceProvider`
 isolates one `Workspace` per `threading.local()` for exactly that reason, and its own
 `SECURITY.md` forbids sharing one across threads. `ApiBackend.from_credentials` (`backend.py`)

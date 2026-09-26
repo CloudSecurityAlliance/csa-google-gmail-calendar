@@ -2,8 +2,8 @@
 everything up to the one boundary this module exists to isolate (`auth.load_credentials`'s
 real interactive consent, a browser and `InstalledAppFlow.run_local_server()`, which this file
 never calls directly and this test suite does not simulate - that is task 14's gated live
-suite, per the coordinator's ruling on the coverage gate). Every test here monkeypatches at
-that one boundary and asserts on `_login.py`'s own wiring around it.
+suite. Every test here monkeypatches at that one boundary and asserts on `_login.py`'s own
+wiring around it.
 """
 import io
 import json

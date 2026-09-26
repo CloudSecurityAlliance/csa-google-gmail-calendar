@@ -127,10 +127,10 @@ def test_cleanup_possible_reflects_whether_calendar_delete_is_enabled():
 
 
 def test_get_attachment_is_demonstrated_against_a_fixture_the_demo_itself_creates():
-    """Fix round 1 (coordinator review, CINO 2026-09-26): get_attachment is a real tool with a
-    security-relevant containment check on a message-supplied filename - it must not be quietly
-    left out. The demo creates its own fixture (send_message's own attachment) rather than
-    hoping a real inbox happens to have one."""
+    """get_attachment is a real tool with a security-relevant containment check on a
+    message-supplied filename - it must not be quietly left out. The demo creates its own
+    fixture (send_message's own attachment) rather than hoping a real inbox happens to have
+    one."""
     _, plan = _plan()
     named = {s["tool"] for s in plan["steps"]}
     assert "get_attachment" in named
@@ -148,13 +148,13 @@ def test_get_attachment_is_demonstrated_against_a_fixture_the_demo_itself_create
 
 
 def test_every_registered_tool_is_either_demonstrated_or_explained():
-    """Fix round 1 (coordinator review, CINO 2026-09-26): a hand-authored catalogue nobody
-    checks is a catalogue that drifts silently. Every tool this server can EVER register
-    (full flavour, every capability enabled) must appear as a step in `_catalogue` OR be named
-    in `_NOT_DEMONSTRATED` with its own one-line reason - never neither, and never both."""
+    """A hand-authored catalogue nobody checks is a catalogue that drifts silently. Every tool
+    this server can EVER register (full flavour, every capability enabled) must appear as a
+    step in `_catalogue` OR be named in `_NOT_DEMONSTRATED` with its own one-line reason - never
+    neither, and never both."""
     server = create_server(backend=None, policy=policy.Policy(frozenset(policy.ALL_CAPABILITIES)))
     all_names = {t.name for t in server._tool_manager.list_tools()}
-    catalogued = {tool_name for tool_name, _, _ in _catalogue("test-run-id")}
+    catalogued = {entry.tool for entry in _catalogue("test-run-id")}
     explained = set(_NOT_DEMONSTRATED)
 
     unexplained = all_names - catalogued - explained
@@ -170,6 +170,90 @@ def test_every_registered_tool_is_either_demonstrated_or_explained():
 def test_not_demonstrated_is_reported_back_in_the_plan():
     _, plan = _plan()
     assert plan["not_demonstrated"] == _NOT_DEMONSTRATED
+
+
+def test_mail_send_only_configuration_produces_no_unresolvable_send_step():
+    """The scenario flagged in review: `CSA_GGC_CAPABILITIES=mail.send` registers
+    send_message/forward/reply/reply_all/send_draft (all gated mail.send) but NOT whoami or
+    create_draft (both gated mail.read/mail.write, neither enabled here). Every one of those
+    five must therefore be DROPPED, not planned with a placeholder nothing can resolve."""
+    _, plan = _plan(enabled={policy.MAIL_SEND})
+    planned = {step["tool"] for step in plan["steps"]}
+    for risky in ("send_message", "forward", "reply", "reply_all", "send_draft"):
+        assert risky not in planned, f"{risky} was planned without whoami/create_draft available"
+
+    skipped_tools = {entry["tool"] for entry in plan["skipped"]}
+    assert {"send_message", "forward", "reply", "reply_all", "send_draft"} <= skipped_tools
+    for entry in plan["skipped"]:
+        assert entry["reason"]                        # every skip states why
+
+
+def test_mail_send_only_configuration_still_plans_the_dependency_free_steps():
+    """Dropping the unsafe steps must not silently drop everything - auth_status/
+    describe_configuration/report_a_problem have no prerequisites and no capability gate."""
+    _, plan = _plan(enabled={policy.MAIL_SEND})
+    planned = {step["tool"] for step in plan["steps"]}
+    assert {"auth_status", "describe_configuration", "report_a_problem"} <= planned
+
+
+def test_a_step_whose_only_dependency_chain_leads_to_an_unavailable_tool_is_also_skipped():
+    """Cascading dependency: get_attachment needs send_message (via get_message), and
+    send_message needs whoami - under mail.send-only, get_attachment must be dropped too, not
+    just the tool it directly names."""
+    _, plan = _plan(enabled={policy.MAIL_SEND})
+    planned = {step["tool"] for step in plan["steps"]}
+    assert "get_attachment" not in planned
+
+
+def test_mail_cleanup_possible_is_false_when_mail_write_is_not_enabled():
+    """mail.send alone can create real messages (send_message/forward/reply/... are gated
+    mail.send, not mail.write) but trash_email/trash_thread need mail.write - a deployment
+    that can send but not clean up must say so."""
+    _, plan = _plan(enabled={policy.MAIL_SEND})
+    assert plan["mail_cleanup_possible"] is False
+
+
+def test_mail_cleanup_possible_is_true_under_the_default_policy():
+    _, plan = _plan(enabled=set(policy.DEFAULT_ENABLED))
+    assert plan["mail_cleanup_possible"] is True
+
+
+def test_advice_warns_when_mail_cleanup_is_not_possible():
+    _, plan = _plan(enabled={policy.MAIL_SEND})
+    assert "mail_cleanup_possible" in plan["advice"]
+
+
+def test_final_cleanup_trashes_every_thread_this_run_created():
+    """Fix: the demo used to end its self-sent thread on `untrash_thread` - i.e. RESTORED, not
+    cleaned up - and never touched forward's or send_draft's own separate threads at all. Now
+    there must be a trash_thread/trash_email call for each, with no untrash after it."""
+    _, plan = _plan()
+    trash_thread_steps = [s for s in plan["steps"] if s["tool"] == "trash_thread"]
+    trash_email_steps = [s for s in plan["steps"] if s["tool"] == "trash_email"]
+    # One trash_thread for the reversibility demo, one more as final cleanup.
+    assert len(trash_thread_steps) == 2
+    # One trash_email for the reversibility demo, plus final cleanup of forward's and
+    # send_draft's own separate threads.
+    assert len(trash_email_steps) == 3
+
+    # The very last mail-tier disposal step touching the self-sent thread must be a trash,
+    # never followed by an untrash - i.e. the plan does not end the story by restoring it.
+    thread_related = [s["tool"] for s in plan["steps"]
+                      if s["tool"] in ("trash_thread", "untrash_thread")]
+    assert thread_related[-1] == "trash_thread"
+
+
+def test_untrash_steps_still_appear_to_demonstrate_reversibility():
+    """The reversibility demonstration is deliberately kept - only the ENDING changed."""
+    _, plan = _plan()
+    named = {s["tool"] for s in plan["steps"]}
+    assert "untrash_email" in named
+    assert "untrash_thread" in named
+
+
+def test_advice_never_promises_the_label_is_cleaned_up():
+    _, plan = _plan()
+    assert "never deleted" in plan["advice"].lower() or "not deleted" in plan["advice"].lower()
 
 
 def test_running_the_plan_twice_produces_two_differently_named_labels():

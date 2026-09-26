@@ -14,9 +14,9 @@ subcommands that project has are not built yet here - they depend on `_desktop.p
 Task 11 wires a real `Backend` into the default run path for the first time (tasks before it
 only ever registered auth tools, which never read `backend` at all).
 
-**Fix round 1 (coordinator review, CINO 2026-09-26): this used to build and share ONE
-`ApiBackend` instance across every thread, and the reasoning that justified it was wrong on
-both halves.** `googleapiclient` clients are NOT thread-safe - `../csa-google-workspace`'s own
+**Correction (2026-09-26): this used to build and share ONE `ApiBackend` instance across every
+thread, and the reasoning that justified it was wrong on both halves.** `googleapiclient`
+clients are NOT thread-safe - `../csa-google-workspace`'s own
 `WorkspaceProvider` isolates one `Workspace` per `threading.local()` for exactly this reason,
 and that project's `SECURITY.md` forbids sharing one across threads outright; the previous
 version of this docstring claimed the opposite precedent, which was simply false. And
@@ -41,9 +41,9 @@ actually invoked turns it back into an ordinary `ToolError` through `_base._erro
 **The fix: `threading.local()`, one `ApiBackend` per thread, each built on that thread's own
 first call** - mirroring `WorkspaceProvider` exactly rather than inventing a different shape
 for the identical problem. No lock: each thread only ever touches its own slot, so there is
-nothing to race, and (per the coordinator's explicit instruction) serialising every call behind
-one lock was rejected - that would defeat the SDK's whole reason for dispatching onto worker
-threads in the first place, trading a correctness bug for a throughput regression. The
+nothing to race, and serialising every call behind one lock was rejected - that would defeat
+the SDK's whole reason for dispatching onto worker threads in the first place, trading a
+correctness bug for a throughput regression. The
 per-thread cost is one extra discovery-document load and one extra credential read per worker
 thread the SDK happens to use, not per call - cheap next to getting the sibling's isolation
 property back.

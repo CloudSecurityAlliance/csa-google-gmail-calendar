@@ -64,12 +64,18 @@ from ._base import LOCAL_READ, tool
 def _granted_scopes(token_path: str) -> list[str] | None:
     """`None` when no credential is cached yet - distinct from `[]`, which would claim a
     credential exists and was granted nothing. No network call: `Credentials.from_authorized_user_file`
-    is a local JSON read, the same primitive `auth_status`'s own no-network check uses."""
+    is a local JSON read, the same primitive `auth_status`'s own no-network check uses.
+
+    `OSError` alongside `ValueError`/`GoogleAuthError`: `os.path.exists` returning `True` above
+    does not guarantee the file is still readable a moment later (permission changed, deleted
+    in a race, or simply unreadable) - an uncaught `OSError` would propagate as a raw traceback
+    that names `token_path`, exactly the value this tool's own docstring promises never to
+    return."""
     if not os.path.exists(token_path):
         return None
     try:
         creds = Credentials.from_authorized_user_file(token_path)
-    except (ValueError, GoogleAuthError):
+    except (ValueError, GoogleAuthError, OSError):
         return None
     return sorted(creds.scopes or [])
 
