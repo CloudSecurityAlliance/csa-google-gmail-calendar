@@ -420,16 +420,23 @@ class FakeBackend:
         return self.modify_message_labels(message_id=message_id, add=["UNREAD"])
 
     def trash_message(self, *, message_id: str) -> dict[str, Any]:
-        return self.modify_message_labels(message_id=message_id, add=["TRASH"])
+        # Real Gmail's dedicated messages.trash removes it from the inbox too, not just adding
+        # TRASH - the exact sibling of the mark_spam fix below, left unmade until now (Fix
+        # round, final whole-branch review, CINO 2026-09-26): the fake used to add TRASH alone,
+        # so a trashed message stayed visible in INBOX in this double when it would not on
+        # real Gmail.
+        return self.modify_message_labels(message_id=message_id, add=["TRASH"], remove=["INBOX"])
 
     def trash_thread(self, *, thread_id: str) -> dict[str, Any]:
-        return self.modify_thread_labels(thread_id=thread_id, add=["TRASH"])
+        return self.modify_thread_labels(thread_id=thread_id, add=["TRASH"], remove=["INBOX"])
 
     def untrash_message(self, *, message_id: str) -> dict[str, Any]:
-        return self.modify_message_labels(message_id=message_id, remove=["TRASH"])
+        # The other direction of the same fix: real Gmail's messages.untrash restores it to the
+        # inbox, mirroring unmark_spam below - not just removing TRASH.
+        return self.modify_message_labels(message_id=message_id, remove=["TRASH"], add=["INBOX"])
 
     def untrash_thread(self, *, thread_id: str) -> dict[str, Any]:
-        return self.modify_thread_labels(thread_id=thread_id, remove=["TRASH"])
+        return self.modify_thread_labels(thread_id=thread_id, remove=["TRASH"], add=["INBOX"])
 
     def mark_spam(self, *, message_id: str) -> dict[str, Any]:
         # Real Gmail moves a spammed message out of the inbox, and restores it on unmark; the

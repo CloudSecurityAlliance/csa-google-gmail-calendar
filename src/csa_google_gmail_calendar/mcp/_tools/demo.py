@@ -66,12 +66,14 @@ few runs.
 ## `get_attachment`, and the fixture it needs
 
 The `send_message` step attaches a small local file (a placeholder path under
-`CSA_GGC_ATTACH_DIR`, the same variable that governs both outgoing attachments and where a
-downloaded one is written), so the demo CREATES its own fixture instead of hoping the real
-mailbox happens to have one lying around. A `get_message` step reads that same self-sent
-message back to learn the attachment's id and filename, and `get_attachment` downloads it. If
-`CSA_GGC_ATTACH_DIR` is not configured, `send_message` itself would refuse (naming that
-variable) before any of this runs - `advice` says so, so the executor can skip straight to the
+`CSA_GGC_ATTACH_DIR`), so the demo CREATES its own fixture instead of hoping the real mailbox
+happens to have one lying around. A `get_message` step reads that same self-sent message back
+to learn the attachment's id and filename, and `get_attachment` downloads it - into
+`CSA_GGC_DOWNLOAD_DIR`, a DIFFERENT directory from `CSA_GGC_ATTACH_DIR` (the two must not
+overlap; see `_attachments.py`'s module docstring for why). If `CSA_GGC_ATTACH_DIR` is not
+configured, `send_message` itself would refuse (naming that variable) before any of this
+runs; if `CSA_GGC_DOWNLOAD_DIR` is not configured, `get_attachment` refuses the same way,
+naming that variable instead - `advice` says so, so the executor can skip straight to the
 next step rather than getting stuck on a refusal it could have predicted.
 
 ## What is not demonstrated, and why - `_NOT_DEMONSTRATED`

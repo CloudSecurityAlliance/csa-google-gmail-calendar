@@ -1,4 +1,23 @@
-"""Which local files may be attached to outgoing mail.
+"""Which local files may be attached to outgoing mail, and where a downloaded attachment may be
+written - two directions, two directories, and (fix round, final whole-branch review, CINO
+2026-09-26) two separate environment variables, never one.
+
+**Why one directory cannot do both jobs.** `AttachmentPolicy` (below) is the READ bound:
+`send_message`/`create_draft`/etc. take a local path and attach whatever it names, so the bound
+is "only files under `CSA_GGC_ATTACH_DIR` may be read and put on the wire." `DownloadPolicy`
+(below) is the WRITE bound: `get_attachment` takes bytes from a message a STRANGER sent and
+writes them to disk under a `filename` the same stranger chose. Configuring both directions to
+the same directory - which is what this module used to do, with a single `CSA_GGC_ATTACH_DIR`
+governing both - lets a stranger's message write a file into the exact directory outgoing mail
+reads from. If the stranger names their attachment the same as a real file already there
+(`q3-budget.pdf`), the download overwrites it; if they name it anything else, it is still a new
+file sitting in the one directory a model is told is safe to attach from. Either way, a later
+`send_message(attachments=["q3-budget.pdf"])` can put attacker-controlled bytes on the wire
+wearing a name the user trusts. Separating the directions closes this: `CSA_GGC_DOWNLOAD_DIR`
+does not default to `CSA_GGC_ATTACH_DIR`, does not default to a subdirectory of it, and
+`check_directories_disjoint` (below) refuses at server construction if the two are ever
+configured to overlap - the misconfiguration that recreates this bug is made impossible to
+hold, not merely discouraged.
 
 `send_message(attachments=[...])` takes a path, which makes it a file-read primitive wearing
 an innocuous name. The bound is a single configured directory, and it is checked on the
@@ -8,13 +27,13 @@ symlink chain (link to link to target) and walks through a symlinked directory c
 just a symlinked final component, so both are caught by the same check rather than needing
 special cases.
 
-Unset means attachments are off, not unrestricted. That is the default-posture rule from spec
-§3 applied to the filesystem, and the refusal names the variable — a capability that is one
-environment variable away should say so rather than look broken (the csa-skilljar idiom). A
-configured root that does not exist, or exists but is not a directory, is refused the same way,
-at construction: a typo'd directory should not silently produce an object that answers every
-call with "the file does not exist", sending the operator hunting for a missing file instead of
-a broken configuration.
+Unset means attachments (or downloads) are off, not unrestricted. That is the default-posture
+rule from spec §3 applied to the filesystem, and the refusal names the variable - a capability
+that is one environment variable away should say so rather than look broken (the csa-skilljar
+idiom). A configured root that does not exist, or exists but is not a directory, is refused the
+same way, at construction: a typo'd directory should not silently produce an object that
+answers every call with "the file does not exist", sending the operator hunting for a missing
+file instead of a broken configuration.
 
 **Residual risk — TOCTOU.** `resolve()` followed by a read is two syscalls, and the filesystem
 can change between them (a file swapped for a symlink after the check, before the read). This
@@ -138,3 +157,114 @@ class AttachmentPolicy:
 
 def from_env() -> AttachmentPolicy:
     return AttachmentPolicy(os.environ.get(ENV_VAR) or None)
+
+
+DOWNLOAD_ENV_VAR = "CSA_GGC_DOWNLOAD_DIR"
+
+
+class DownloadPolicy:
+    """Where `get_attachment` writes a downloaded attachment - the write-side, incoming-mail
+    counterpart to `AttachmentPolicy`'s read-side, outgoing-mail root above. Deliberately a
+    separate class with its own environment variable, never a second use of `CSA_GGC_ATTACH_DIR`
+    or a subdirectory derived from it - see this module's docstring for why sharing one
+    directory between the two directions is exploitable, not merely untidy.
+
+    Unset (`root is None`) means downloads are refused, naming `CSA_GGC_DOWNLOAD_DIR` - the same
+    posture `AttachmentPolicy` holds for `CSA_GGC_ATTACH_DIR`. A configured root is resolved and
+    existence/directory-checked at construction, for the same reason `AttachmentPolicy` does:
+    a typo'd directory should fail loudly at startup, not on whatever the first download
+    happens to be.
+    """
+
+    def __init__(self, root: str | None) -> None:
+        if not root:
+            self.root: pathlib.Path | None = None
+            return
+        try:
+            resolved_root = pathlib.Path(os.path.expanduser(root)).resolve(strict=False)
+        except ValueError as exc:
+            raise PolicyError(f"{DOWNLOAD_ENV_VAR} is set to {_echo(root)}, which is not a "
+                               f"valid path: {exc}") from exc
+        if not resolved_root.is_dir():
+            kind = "does not exist" if not resolved_root.exists() else "is not a directory"
+            raise PolicyError(
+                f"{DOWNLOAD_ENV_VAR} is set to {_echo(root)}, but {resolved_root} {kind}. "
+                f"Configure {DOWNLOAD_ENV_VAR} to point at a directory this server may write "
+                f"downloaded attachments to.")
+        self.root = resolved_root
+
+    def resolve(self, filename: str) -> pathlib.Path:
+        """The write-side containment check: resolve, then check containment on the RESOLVED
+        path, against the configured root - the same bound `AttachmentPolicy.resolve` applies
+        to a read, applied here to a file that by definition does not exist yet.
+
+        `filename` is message-supplied - it comes from whichever attachment part of a Gmail
+        message a stranger wrote. An absolute path or a `..` segment is refused outright rather
+        than silently reinterpreted, which is exactly wrong for a value nobody trustworthy
+        chose."""
+        if self.root is None:
+            raise PolicyError(
+                f"downloads are disabled: no download directory is configured. Set "
+                f"{DOWNLOAD_ENV_VAR} to a directory this server may write downloaded "
+                f"attachments to.")
+        candidate = pathlib.Path(filename)
+        if candidate.is_absolute() or ".." in candidate.parts:
+            raise PolicyError(
+                f"{filename!r} is an invalid attachment filename (must be a plain relative "
+                f"name, no path separators or '..'). Refused rather than guessing what was "
+                f"meant.")
+        target = self.root / candidate
+        try:
+            resolved = target.resolve(strict=False)
+        except ValueError as exc:
+            raise PolicyError(f"{_echo(filename)} is not a valid path: {exc}") from exc
+        if not resolved.is_relative_to(self.root):
+            raise PolicyError(
+                f"{filename!r} resolves to a location outside the download directory "
+                f"({self.root}). Refused.")
+        return resolved
+
+    def write(self, filename: str, content: bytes) -> pathlib.Path:
+        """Write `content` under the configured download directory, refusing to overwrite
+        anything already there. A message's attachment part can name itself anything, including
+        the name of a file already sitting in the download directory - refusing the overwrite
+        (rather than disambiguating the filename) is what closes the chain this class exists
+        to close: a stranger's message must not be able to replace a file a person put there,
+        any more than it should be able to replace one under `AttachmentPolicy`'s root."""
+        resolved = self.resolve(filename)
+        if resolved.exists():
+            raise PolicyError(
+                f"{filename!r} already exists at {resolved} - refused rather than overwritten. "
+                f"A message's attachment can be named anything, including the name of a file "
+                f"already in the download directory; retry with a different filename.")
+        resolved.write_bytes(content)
+        return resolved
+
+
+def download_policy_from_env() -> DownloadPolicy:
+    return DownloadPolicy(os.environ.get(DOWNLOAD_ENV_VAR) or None)
+
+
+def check_directories_disjoint(attach_policy: AttachmentPolicy | None,
+                               download_policy: DownloadPolicy | None) -> None:
+    """Refuse a configuration where `CSA_GGC_ATTACH_DIR` and `CSA_GGC_DOWNLOAD_DIR` name the
+    same directory, or one nested inside the other. That configuration recreates the exact
+    vulnerability `DownloadPolicy` exists to close (a stranger's downloaded attachment landing
+    somewhere `send_message` can then pick up as if the user meant to send it) - it must be
+    impossible to hold, not merely discouraged, so this is called once, at server construction
+    (`mcp.server.create_server`), the one place both configured roots are ever in hand together.
+    """
+    if attach_policy is None or download_policy is None:
+        return
+    attach_root, download_root = attach_policy.root, download_policy.root
+    if attach_root is None or download_root is None:
+        return
+    if (attach_root == download_root or attach_root.is_relative_to(download_root)
+            or download_root.is_relative_to(attach_root)):
+        raise PolicyError(
+            f"{ENV_VAR} ({attach_root}) and {DOWNLOAD_ENV_VAR} ({download_root}) must not be "
+            f"the same directory, or nested inside one another. The directory outgoing mail "
+            f"reads attachments from and the directory get_attachment writes downloaded "
+            f"attachments to must be disjoint - otherwise anything a stranger sends could "
+            f"overwrite, or later be picked up as, a file the user meant to send. Configure "
+            f"them to point at two separate directories.")

@@ -100,9 +100,25 @@ def _refused(fn: Callable[..., Any], started: float, cause: BaseException,
     log is a DIFFERENT destination with different governance - a cache directory this server
     cannot rotate, purge, or even read. So the caller keeps the full message and the log gets
     only the exception type.
-    """
+
+    **Scrubbed here too (fix round, final whole-branch review, CINO 2026-09-26).** Every
+    branch above builds `translated` from `str(e)`, and `_attachments._echo` deliberately
+    echoes a caller-supplied path into a `PolicyError` - a filename or a path can carry the same
+    live terminal control sequences and Trojan-Source bidi-override/BOM codepoints
+    `_untrusted.scrub` exists to neutralise on the SUCCESS path, and an error message reaches
+    the identical terminal that renders a success result. Scrubbing only the success path and
+    not this one - the other place every tool's return value passes through a single funnel -
+    would leave exactly the human/model asymmetry `_untrusted.py:23-28` names as the whole
+    reason this module exists, just reachable through a refusal instead of a result. One place,
+    so a tool added later is covered by construction rather than by remembering to scrub each
+    new `except` branch."""
     log.info("%s refused after %s: %s", fn.__name__, _took(started), type(cause).__name__)
-    return translated
+    message = str(translated)
+    count = _untrusted.suspicious_count(message)
+    if count:
+        log.info("%s refusal message carried %d suspicious character(s), neutralised",
+                 fn.__name__, count)
+    return ToolError(_untrusted.neutralise(message))
 
 
 def _errors(fn: _F) -> _F:
@@ -112,11 +128,12 @@ def _errors(fn: _F) -> _F:
     thin: the **tool name**, the **outcome**, and the **duration** - never the arguments, and
     (via `_refused`) never the message text of an expected refusal either.
 
-    **Every result also passes through `_untrusted.scrub`**, for the same reason this is the
-    one place every tool passes through: it is the one place a call can be recorded, and a
-    result sanitised, without touching every handler - including one added later. That removes
-    terminal control sequences from returned strings, which JSON escaping does not (see
-    `_untrusted.py`).
+    **Every result also passes through `_untrusted.scrub`, and every REFUSAL message through
+    `_untrusted.neutralise` (`_refused`, below)**, for the same reason this is the one place
+    every tool passes through: it is the one place a call can be recorded, and a result (or a
+    refusal) sanitised, without touching every handler - including one added later. That
+    removes terminal control sequences, and Trojan-Source bidi-override/BOM codepoints, from
+    returned and refused strings alike, which JSON escaping does not (see `_untrusted.py`).
 
     Handles both sync and async tool bodies - `authenticate` (task 10) awaits `ctx.elicit_url`
     and `anyio.to_thread.run_sync`, so it cannot be a plain sync function, while every mail and
@@ -154,6 +171,10 @@ def _errors(fn: _F) -> _F:
                           type(e).__name__)
                 raise
             log.info("%s ok in %s", fn.__name__, _took(started))
+            count = _untrusted.suspicious_count(result)
+            if count:
+                log.info("%s result carried %d suspicious character(s), neutralised",
+                         fn.__name__, count)
             return _untrusted.scrub(result)
         return awrapped  # type: ignore[return-value]
 
@@ -185,6 +206,10 @@ def _errors(fn: _F) -> _F:
             log.error("%s failed after %s: %s", fn.__name__, _took(started), type(e).__name__)
             raise
         log.info("%s ok in %s", fn.__name__, _took(started))
+        count = _untrusted.suspicious_count(result)
+        if count:
+            log.info("%s result carried %d suspicious character(s), neutralised",
+                     fn.__name__, count)
         return _untrusted.scrub(result)
     return wrapped  # type: ignore[return-value]
 

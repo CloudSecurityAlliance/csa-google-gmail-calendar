@@ -16,12 +16,10 @@ the same call again if it were ever somehow reached, but the tool simply does no
 """
 from __future__ import annotations
 
-import pathlib
-
 from mcp.server import MCPServer
 
 from ... import policy as policy_mod
-from ..._attachments import AttachmentPolicy
+from ..._attachments import DownloadPolicy
 from ...backend import Backend
 from ...exceptions import PolicyError
 from ...mail import Mail
@@ -48,43 +46,8 @@ from ._schemas import (
 )
 
 
-def _resolve_attachment_write_path(attach_policy: AttachmentPolicy | None,
-                                   filename: str) -> pathlib.Path:
-    """The write-side containment check `get_attachment` needs, and why it is not
-    `AttachmentPolicy.resolve()`: that method is for READING a file that must already exist
-    (an outgoing attachment picked off disk) and raises when it does not - exactly wrong for
-    writing a NEW file that, by definition, does not exist yet. Same bound as `resolve()`
-    (the containment check on the RESOLVED path, against the SAME configured root), applied in
-    the write direction instead.
-
-    `filename` is message-supplied - it comes from whichever attachment part of a Gmail message
-    a stranger wrote, walked in `get_attachment`, below. A value like `../../escaped.txt` must
-    be refused before anything is written, which is exactly what `is_relative_to` below does;
-    an absolute path is refused outright rather than silently reinterpreted as "escape to this
-    absolute location," which `AttachmentPolicy.resolve` (read side) would otherwise permit for
-    an intentionally-absolute, allowlist-checked SEND path.
-    """
-    if attach_policy is None or attach_policy.root is None:
-        from ..._attachments import ENV_VAR
-        raise PolicyError(
-            f"attachments are disabled: no attachment directory is configured. Set "
-            f"{ENV_VAR} to a directory this server may write downloaded attachments to.")
-    candidate = pathlib.Path(filename)
-    if candidate.is_absolute() or ".." in candidate.parts:
-        raise PolicyError(
-            f"{filename!r} is an invalid attachment filename (must be a plain relative name, "
-            f"no path separators or '..'). Refused rather than guessing what was meant.")
-    target = attach_policy.root / candidate
-    resolved = target.resolve(strict=False)
-    if not resolved.is_relative_to(attach_policy.root):
-        raise PolicyError(
-            f"{filename!r} resolves to a location outside the attachment directory "
-            f"({attach_policy.root}). Refused.")
-    return resolved
-
-
 def register_mail_read_tools(app: MCPServer, backend: Backend, policy_obj: policy_mod.Policy,
-                             attach_policy: AttachmentPolicy | None = None) -> None:
+                             download_policy: DownloadPolicy | None = None) -> None:
     mail = Mail(backend)
 
     if policy_obj.allows("search_messages"):
@@ -185,8 +148,11 @@ def register_mail_read_tools(app: MCPServer, backend: Backend, policy_obj: polic
         @tool(app, annotations=READ)
         def get_attachment(message_id: str, attachment_id: str,
                            filename: str) -> GetAttachmentOut:
-            """Download one attachment from a message to disk, under the configured attachment
-            directory (`CSA_GGC_ATTACH_DIR`), and return the path it was written to.
+            """Download one attachment from a message to disk, under the configured download
+            directory (`CSA_GGC_DOWNLOAD_DIR` - deliberately NOT `CSA_GGC_ATTACH_DIR`, the
+            directory `send_message`/`create_draft` read outgoing attachments from; the two
+            must be different directories, see that variable's own docs), and return the path
+            it was written to.
 
             `attachment_id` and `filename` come from `get_message`'s `attachments` list for the
             same `message_id` - `get_message` never inlines attachment bytes itself (that would
@@ -198,14 +164,23 @@ def register_mail_read_tools(app: MCPServer, backend: Backend, policy_obj: polic
             argument instead; this tool only ever downloads.
 
             `filename` is untrusted: it is read from a message a stranger sent, and is refused
-            if it would resolve outside the attachment directory (no path separators or `..`) -
+            if it would resolve outside the download directory (no path separators or `..`) -
             a message trying to smuggle a write to `../../etc/passwd` gets refused, not
-            followed."""
+            followed. It is also refused if a file of that name already exists in the download
+            directory - a stranger's message must not be able to overwrite a file already
+            there, which is exactly what having `get_attachment` write into the SAME directory
+            `send_message` reads from would otherwise let happen (a message named to collide
+            with a real attachment, later sent as if it were that file)."""
+            if download_policy is None:
+                from ..._attachments import DOWNLOAD_ENV_VAR
+                raise PolicyError(
+                    f"downloads are disabled: no download directory is configured. Set "
+                    f"{DOWNLOAD_ENV_VAR} to a directory this server may write downloaded "
+                    f"attachments to.")
             attachment = backend.get_attachment(message_id=message_id,
                                                 attachment_id=attachment_id)
-            path = _resolve_attachment_write_path(attach_policy, filename)
             content = decode_attachment_bytes(attachment.get("data", ""))
-            path.write_bytes(content)
+            path = download_policy.write(filename, content)
             return {"path": str(path), "filename": path.name, "size_bytes": len(content)}
 
     if policy_obj.allows("list_labels"):

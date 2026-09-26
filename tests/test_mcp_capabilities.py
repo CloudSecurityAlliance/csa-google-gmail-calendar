@@ -116,6 +116,35 @@ def test_declared_capability_matches_the_backend_gate():
         assert TOOL_CAPABILITIES[tool_name] == policy._GATES[method].capability, tool_name
 
 
+def test_every_capability_gated_tool_is_pinned_in_the_map():
+    """FIX 5(a) (final whole-branch review): the OBLIGATION comment above `_TOOL_TO_GATED_METHOD`
+    names its own hole - `test_declared_capability_matches_the_backend_gate` can only check
+    pairs already IN that map, so a capability-gated tool a future task forgets to add there
+    passed silently. Every tool `TOOL_CAPABILITIES` declares gated (a non-`None` capability)
+    must have a row here, checked structurally rather than by trusting the comment."""
+    gated = {name for name, cap in TOOL_CAPABILITIES.items() if cap is not None}
+    missing = gated - set(_TOOL_TO_GATED_METHOD)
+    assert not missing, f"capability-gated tools missing from _TOOL_TO_GATED_METHOD: {sorted(missing)}"
+
+
+@pytest.mark.parametrize("capability", sorted(policy.ALL_CAPABILITIES))
+def test_a_single_enabled_capability_registers_exactly_its_own_tools(capability):
+    """FIX 5(b): the pairwise check above (`test_declared_capability_matches_the_backend_gate`)
+    confirms a tool's DECLARED capability matches its Backend method's gate - it says nothing
+    about whether the tool's own REGISTRATION guard (`policy_obj.allows(...)` in each
+    `_tools/*.py` module) actually gates on that same capability. `find_free_time` guarding on
+    `query_freebusy` (`calendar.read`) is right today and nothing pinned it - a guard that
+    named a DIFFERENT capability by mistake would still pass every other test in this file.
+    Built with exactly ONE capability enabled: a tool registered for the wrong reason shows up
+    as an unexpected extra, and a tool this capability was supposed to unlock but didn't shows
+    up as missing."""
+    server = create_server(backend=None, policy=policy.Policy(frozenset({capability})))
+    names = _tool_names(server)
+    expected = {name for name, cap in TOOL_CAPABILITIES.items()
+               if cap is None or cap == capability}
+    assert names == expected, (capability, sorted(names - expected), sorted(expected - names))
+
+
 def test_no_tool_is_named_delete_email():
     """ADR-style rule this project states for itself: a tool name is a claim made to a reader
     who cannot check it. `trash_email`/`untrash_email` exist (task 11); a bare, permanent

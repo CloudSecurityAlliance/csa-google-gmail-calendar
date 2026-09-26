@@ -54,12 +54,32 @@ class _Chain:
 
     Terminality is decided by `_LEAF_METHODS` membership, not by counting dots or kwargs - see
     that constant's docstring for why the old heuristic was wrong.
+
+    FIX 6 (final whole-branch review, CINO 2026-09-26): a `Backend` method that calls a real
+    googleapiclient leaf this double's `_LEAF_METHODS` set does not know about used to fall
+    through the "not a leaf" branch, treating the leaf as a resource accessor and returning
+    another `_Chain` in its place. `.execute` was then accessed on THAT `_Chain`, which
+    (unrecognised too) resolved to yet another callable rather than the real `_Req.execute` -
+    so the eventual call returned a bare `_Chain` object where a dict was expected, and the
+    failure surfaced two calls later as `'_Chain' object has no attribute 'get'`, nowhere near
+    its real cause. `execute` is special-cased here to raise immediately and NAME the leaf that
+    should have been in `_LEAF_METHODS` (a well-formed chain never calls `.execute()` directly
+    on a `_Chain` - only on the `_Req` a recognised leaf call returns), closing that class of
+    confusing failure at its source rather than two calls downstream.
     """
 
     def __init__(self, rec, path="", results=None):
         self._rec, self._path, self._results = rec, path, results or {}
 
     def __getattr__(self, name):
+        if name == "execute":
+            leaf = self._path.rsplit(".", 1)[-1] if self._path else "(root)"
+            raise AttributeError(
+                f"_Chain.execute() called directly on path {self._path!r}: {leaf!r} is not in "
+                f"_LEAF_METHODS, so it was treated as a resource accessor rather than the "
+                f"terminal call that returns a request. Add {leaf!r} to _LEAF_METHODS, or "
+                f"check that the Backend method under test names the right method.")
+
         def call(**kwargs):
             path = f"{self._path}.{name}".lstrip(".")
             if name in _LEAF_METHODS:
@@ -122,6 +142,15 @@ def _boom(err: HttpError) -> "_Chain":
 
     class Boom(_Chain):
         def __getattr__(self, name):
+            if name == "execute":
+                # Same unknown-leaf guard as `_Chain.execute` above, reproduced here (not
+                # inherited) because this class defines its own `__getattr__` rather than
+                # delegating to the parent's.
+                leaf = self._path.rsplit(".", 1)[-1] if self._path else "(root)"
+                raise AttributeError(
+                    f"Boom.execute() called directly on path {self._path!r}: {leaf!r} is not "
+                    f"in _LEAF_METHODS. Add it there, or check the Backend method under test.")
+
             def call(**kw):
                 path = f"{self._path}.{name}".lstrip(".")
                 if name in _LEAF_METHODS:
@@ -129,6 +158,16 @@ def _boom(err: HttpError) -> "_Chain":
                 return Boom([], path)
             return call
     return Boom([])
+
+
+def test_chain_raises_on_an_unknown_leaf_naming_it_instead_of_returning_a_chain():
+    """FIX 6 (final whole-branch review). A leaf `_LEAF_METHODS` does not know about must not
+    silently resolve to another `_Chain` two calls away from where the real problem is - it
+    must raise here, at `.execute()`, naming the unrecognised leaf."""
+    rec = []
+    chain = _Chain(rec).users().messages().notARealLeaf(id="m1")
+    with pytest.raises(AttributeError, match="notARealLeaf"):
+        getattr(chain, "execute")  # noqa: B009 - attribute access itself is what raises
 
 
 def test_a_404_becomes_notfound():

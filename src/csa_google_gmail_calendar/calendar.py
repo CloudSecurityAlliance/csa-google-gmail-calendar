@@ -172,6 +172,11 @@ class Calendar:
           is ever emitted between them.
         - A busy block extending beyond the window on either side -> clipped to the window in
           step 1, so it cannot produce a gap outside `[time_min, time_max)`.
+        - A calendar id ABSENT from the response entirely, as opposed to present with its own
+          `errors` entry -> named in `unreadable_calendars` with its own distinct reason ("not
+          present in the freebusy response"), never read as free (FIX 7, final whole-branch
+          review, CINO 2026-09-26 - the same failure shape the `errors` fix above closes, for
+          the case Google omits a calendar rather than reporting an error for it).
 
         Every boundary in `free` is normalised to UTC and rendered with a trailing `Z`, not
         `+00:00` (`isoformat()`'s own default) — Google renders its own UTC timestamps with
@@ -188,7 +193,19 @@ class Calendar:
         intervals: list[tuple[datetime, datetime]] = []
         unreadable: list[dict[str, str]] = []
         for calendar_id in calendar_ids:
-            cal = calendars.get(calendar_id, {})
+            if calendar_id not in calendars:
+                # FIX 7 (final whole-branch review, CINO 2026-09-26): a calendar id ABSENT from
+                # the response entirely - as opposed to present with its own `errors` entry -
+                # used to fall through `calendars.get(calendar_id, {})` to `{}`, whose
+                # `cal.get("busy", [])` is also `[]`, so it was silently read as "no busy
+                # intervals" - free - the exact failure shape the `errors` fix above already
+                # closed for the case Google DOES report. Named with a reason distinct from an
+                # `errors` entry's own `reason` (never fabricated as if Google had said
+                # something it did not), so a caller can still tell the two apart.
+                unreadable.append({"id": calendar_id,
+                                  "reason": "not present in the freebusy response"})
+                continue
+            cal = calendars[calendar_id]
             errors = cal.get("errors")
             if errors:
                 # An errors entry means we learned NOTHING about this calendar - not that it

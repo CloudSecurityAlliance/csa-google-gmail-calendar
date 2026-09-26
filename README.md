@@ -377,7 +377,8 @@ what the active flavour hides and why.
 | `CSA_GGC_FLAVOUR` | `core`\|`google`\|`full` - see "Flavours" above | `full` |
 | `CSA_GGC_TOKEN_PATH` | Where the cached OAuth token lives | `~/.csa_google_gmail_calendar/token.json` |
 | `CSA_GGC_CLIENT_SECRETS` | OAuth client secrets JSON, needed only for `authenticate`/`login` (a cached token works without it) | `~/.csa_google_gmail_calendar/client_secret.json` if it exists, else unset |
-| `CSA_GGC_ATTACH_DIR` | Directory outgoing mail may attach local files from; unset means attachments are off, not unrestricted | unset |
+| `CSA_GGC_ATTACH_DIR` | Directory outgoing mail may attach local files from (read side - `send_message`/`create_draft`/etc.); unset means attachments are off, not unrestricted | unset |
+| `CSA_GGC_DOWNLOAD_DIR` | Directory `get_attachment` writes a downloaded attachment to (write side); unset means downloads are off, not unrestricted. **Must not** be `CSA_GGC_ATTACH_DIR`, or a directory nested inside/around it - the server refuses to start if the two overlap, because a stranger's downloaded attachment landing in the directory outgoing mail reads from is exactly the vulnerability separating them closes (a message could overwrite a real file, or later be sent under its name) | unset |
 | `CSA_GGC_LOG_LEVEL` | `DEBUG`\|`INFO`\|`WARNING`\|`ERROR`\|`CRITICAL` | `WARNING` |
 
 Authenticates as the operating user via OAuth, the same model `csa-google-workspace` uses.
@@ -395,10 +396,12 @@ this server specifically; they do not exist on Google's Gmail/Calendar REST surf
   `trash_email`/`mark_spam` each name one specific combination rather than exposing the raw
   label-list edit as the only primitive, per ADR-001.
 - **There is no attachment upload tool.** The only attachment operation Gmail's API has is
-  `users.messages.attachments.get` (this server's `get_attachment`, download only). Sending an
-  attachment is an argument (`attachments=[...]`, a local path under `CSA_GGC_ATTACH_DIR`) on
+  `users.messages.attachments.get` (this server's `get_attachment`, download only - it writes
+  under `CSA_GGC_DOWNLOAD_DIR`). Sending an attachment is an argument (`attachments=[...]`, a
+  local path under `CSA_GGC_ATTACH_DIR`) on
   `send_message`/`create_draft`/`update_draft`/`reply`/`reply_all`/`forward`, not a tool of its
-  own.
+  own. `CSA_GGC_ATTACH_DIR` and `CSA_GGC_DOWNLOAD_DIR` are deliberately two separate variables,
+  never one directory serving both directions - see "Configuration" above.
 - **There is no receive.** Nothing pushes to a client. `list_history` gives increments and
   `search_messages`/`list_threads` poll; `users.watch` needs a Cloud project, a Pub/Sub topic and
   a public HTTPS endpoint, none of which this stdio-only server can offer, so it is omitted

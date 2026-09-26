@@ -189,6 +189,30 @@ def test_find_free_time_names_an_unreadable_calendar_rather_than_treating_it_as_
     assert any(g["start"] == "2026-10-01T10:00:00Z" for g in out["free"])
 
 
+def test_find_free_time_treats_a_calendar_absent_from_the_response_as_unreadable_not_free():
+    """FIX 7 (final whole-branch review, CINO 2026-09-26). Distinct failure shape from the
+    `errors`-entry test above: a calendar id the response doesn't mention AT ALL used to fall
+    through `calendars.get(calendar_id, {})` to `{}`, whose `busy` list is also `[]` - read as
+    a genuinely free calendar rather than one that could not be checked at all. The reason
+    string must be distinguishable from an `errors[0]["reason"]` Google actually sent."""
+    class WithMissingCalendar(FakeBackend):
+        def query_freebusy(self, *, time_min, time_max, calendar_ids):
+            result = super().query_freebusy(time_min=time_min, time_max=time_max,
+                                            calendar_ids=calendar_ids)
+            del result["calendars"]["missing"]
+            return result
+
+    fake = WithMissingCalendar(freebusy={"primary": [
+        {"start": "2026-10-01T09:00:00Z", "end": "2026-10-01T10:00:00Z"}]})
+    s = create_server(backend=fake, policy=policy.Policy())
+    out = _call(s, "find_free_time", time_min="2026-10-01T08:00:00Z",
+                time_max="2026-10-01T12:00:00Z", calendar_ids=["primary", "missing"])
+    assert out["unreadable_calendars"] == [
+        {"id": "missing", "reason": "not present in the freebusy response"}]
+    # The readable calendar's own busy interval still shrinks `free` normally.
+    assert any(g["start"] == "2026-10-01T10:00:00Z" for g in out["free"])
+
+
 def test_find_free_time_output_schema_requires_unreadable_calendars():
     """Non-negotiable: a caller (or a model rendering this into context) must not be able to
     drop `unreadable_calendars` - it is a required key of the output schema, not optional."""

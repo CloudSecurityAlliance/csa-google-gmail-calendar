@@ -1,3 +1,5 @@
+import inspect
+
 import pytest
 
 from csa_google_gmail_calendar.backend import ApiBackend, Backend, FakeBackend
@@ -17,6 +19,21 @@ def test_api_backend_implements_every_protocol_method():
     wanted = {m for m in dir(Backend) if not m.startswith("_")}
     missing = [m for m in wanted if not callable(getattr(ApiBackend, m, None))]
     assert not missing, f"ApiBackend is missing {missing}"
+
+
+def test_fake_and_api_backend_signatures_match_the_protocol():
+    """FIX 5 (final whole-branch review): the two presence-only checks above would still pass
+    if `FakeBackend`/`ApiBackend` implemented a shared method under a DIVERGENT keyword name -
+    a mismatch the offline suite, which only ever calls `FakeBackend`, could never catch; it
+    would surface only against the real API, in production. Compares each implementation's
+    declared parameter names against the Protocol's own signature for every shared method."""
+    for name in (m for m in dir(Backend) if not m.startswith("_")):
+        expected = set(inspect.signature(getattr(Backend, name)).parameters)
+        for impl in (FakeBackend, ApiBackend):
+            actual = set(inspect.signature(getattr(impl, name)).parameters)
+            assert actual == expected, (
+                f"{impl.__name__}.{name} parameters {sorted(actual)} != "
+                f"Backend.{name} parameters {sorted(expected)}")
 
 
 def test_get_message_returns_the_seeded_message():
@@ -53,6 +70,35 @@ def test_mark_spam_removes_inbox_and_adds_spam():
 def test_unmark_spam_removes_spam_and_restores_inbox():
     fake = FakeBackend(messages={"m1": {"id": "m1", "labelIds": ["SPAM"]}})
     fake.unmark_spam(message_id="m1")
+    assert fake.messages["m1"]["labelIds"] == ["INBOX"]
+
+
+def test_trash_message_removes_inbox_and_adds_trash():
+    """FIX 4 (final whole-branch review): the exact sibling of mark_spam above, left unmade -
+    real Gmail's dedicated messages.trash removes it from the inbox too, not just adding
+    TRASH."""
+    fake = FakeBackend(messages={"m1": {"id": "m1", "labelIds": ["INBOX"]}})
+    fake.trash_message(message_id="m1")
+    assert fake.messages["m1"]["labelIds"] == ["TRASH"]
+
+
+def test_untrash_message_removes_trash_and_restores_inbox():
+    fake = FakeBackend(messages={"m1": {"id": "m1", "labelIds": ["TRASH"]}})
+    fake.untrash_message(message_id="m1")
+    assert fake.messages["m1"]["labelIds"] == ["INBOX"]
+
+
+def test_trash_thread_removes_inbox_and_adds_trash_on_every_message():
+    fake = FakeBackend(messages={"m1": {"id": "m1", "threadId": "t1", "labelIds": ["INBOX"]}},
+                       threads={"t1": {}})
+    fake.trash_thread(thread_id="t1")
+    assert fake.messages["m1"]["labelIds"] == ["TRASH"]
+
+
+def test_untrash_thread_removes_trash_and_restores_inbox_on_every_message():
+    fake = FakeBackend(messages={"m1": {"id": "m1", "threadId": "t1", "labelIds": ["TRASH"]}},
+                       threads={"t1": {}})
+    fake.untrash_thread(thread_id="t1")
     assert fake.messages["m1"]["labelIds"] == ["INBOX"]
 
 

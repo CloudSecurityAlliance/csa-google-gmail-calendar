@@ -28,10 +28,14 @@ rather than one merged "everything missing" list because they answer different o
 questions ("enable a capability" versus "change `CSA_GGC_FLAVOUR`") and merging them would lose
 that distinction.
 
-**The attachment directory - path, never contents.** `CSA_GGC_ATTACH_DIR`'s configured path is
-reported because a refusal from `get_attachment`/`send_message` would already disclose it
-(`_attachments.py`'s own refusal messages echo the configured root); nothing about a file
-UNDER that directory - not a name, not a byte - is read or reported here.
+**The attachment/download directories - path, never contents.** `CSA_GGC_ATTACH_DIR`'s and
+`CSA_GGC_DOWNLOAD_DIR`'s configured paths are reported because a refusal from
+`send_message`/`get_attachment` respectively would already disclose them (`_attachments.py`'s
+own refusal messages echo the configured root); nothing about a file UNDER either directory -
+not a name, not a byte - is read or reported here. The two are always reported separately and
+are never the same directory - `_attachments.check_directories_disjoint` refuses at server
+construction if they are ever configured to overlap (see that module's docstring for why one
+directory cannot safely serve both directions).
 
 ## What this deliberately never says
 
@@ -53,7 +57,7 @@ from google.oauth2.credentials import Credentials
 from mcp.server import MCPServer
 
 from ... import auth
-from ..._attachments import AttachmentPolicy
+from ..._attachments import AttachmentPolicy, DownloadPolicy
 from ...policy import ALL_CAPABILITIES
 from .._capabilities import TOOL_CAPABILITIES
 from .._config import Settings
@@ -81,7 +85,8 @@ def _granted_scopes(token_path: str) -> list[str] | None:
 
 
 def register_config_tools(app: MCPServer, settings: Settings, flavour: str,
-                          attach_policy: AttachmentPolicy | None) -> None:
+                          attach_policy: AttachmentPolicy | None,
+                          download_policy: DownloadPolicy | None = None) -> None:
     @tool(app, annotations=LOCAL_READ)
     def describe_configuration() -> dict[str, Any]:
         """What this deployment has enabled, what it is hiding and why, and whether its cached
@@ -101,8 +106,8 @@ def register_config_tools(app: MCPServer, settings: Settings, flavour: str,
         acts on; this field is a scope-level summary, not a replacement for that tool.
 
         Never returns a token path, token contents, or a client-secrets path - only scope
-        identifiers (not secrets) and the attachment directory's configured PATH, which a
-        refusal from `get_attachment`/`send_message` would disclose anyway."""
+        identifiers (not secrets) and the attachment/download directories' configured PATHs,
+        which a refusal from `send_message`/`get_attachment` would disclose anyway."""
         policy = settings.policy
         registered = frozenset(t.name for t in app._tool_manager.list_tools())
         cap_allowed = frozenset(name for name, cap in TOOL_CAPABILITIES.items()
@@ -114,6 +119,9 @@ def register_config_tools(app: MCPServer, settings: Settings, flavour: str,
         attachment_directory = (str(attach_policy.root)
                                 if attach_policy is not None and attach_policy.root is not None
                                 else None)
+        download_directory = (str(download_policy.root)
+                              if download_policy is not None and download_policy.root is not None
+                              else None)
         return {
             "flavour": flavour,
             "flavour_note": (
@@ -130,6 +138,7 @@ def register_config_tools(app: MCPServer, settings: Settings, flavour: str,
             "granted_scopes": granted,
             "scopes_sufficient": scopes_sufficient,
             "attachment_directory": attachment_directory,
+            "download_directory": download_directory,
             "registered_tools": sorted(registered),
             "hidden_by_capability": sorted(set(TOOL_CAPABILITIES) - cap_allowed),
             "hidden_by_flavour": sorted(hidden_by_flavour(flavour, cap_allowed)),

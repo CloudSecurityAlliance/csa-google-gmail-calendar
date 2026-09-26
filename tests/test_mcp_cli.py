@@ -52,7 +52,7 @@ def test_the_default_path_builds_a_server_and_runs_it_over_stdio(monkeypatch):
             ran["transport"] = transport
 
     monkeypatch.setattr("csa_google_gmail_calendar.mcp.cli.create_server",
-                        lambda backend, policy, flavour="full", attach_policy=None: _FakeServer())
+                        lambda backend, policy, flavour="full", attach_policy=None, download_policy=None: _FakeServer())
     assert cli.main([], env={}) == 0
     assert ran == {"transport": "stdio"}
 
@@ -73,7 +73,7 @@ def test_the_default_path_never_loads_credentials_before_a_tool_is_called(monkey
 
     monkeypatch.setattr("csa_google_gmail_calendar.auth.load_cached_credentials", _boom)
     monkeypatch.setattr("csa_google_gmail_calendar.mcp.cli.create_server",
-                        lambda backend, policy, flavour="full", attach_policy=None: _FakeServer())
+                        lambda backend, policy, flavour="full", attach_policy=None, download_policy=None: _FakeServer())
     assert cli.main([], env={}) == 0
     assert ran == {"transport": "stdio"}
 

@@ -142,6 +142,26 @@ def test_describe_configuration_reports_no_attachment_directory_when_unset():
     assert out["attachment_directory"] is None
 
 
+def test_describe_configuration_reports_the_download_directory_path_only(tmp_path):
+    """The write-side sibling of the attachment-directory test above (FIX 1/8, final
+    whole-branch review) - a separate field, never conflated with `attachment_directory`."""
+    from csa_google_gmail_calendar._attachments import DownloadPolicy
+    download_dir = tmp_path / "downloads"
+    download_dir.mkdir()
+    (download_dir / "secret.txt").write_text("do not leak this")
+    server = create_server(backend=None, policy=policy.Policy(),
+                           download_policy=DownloadPolicy(str(download_dir)))
+    out = _call(server, "describe_configuration")
+    assert out["download_directory"] == str(download_dir.resolve())
+    assert "do not leak this" not in repr(out)
+
+
+def test_describe_configuration_reports_no_download_directory_when_unset():
+    server = create_server(backend=None, policy=policy.Policy(), download_policy=None)
+    out = _call(server, "describe_configuration")
+    assert out["download_directory"] is None
+
+
 def test_describe_configuration_reports_the_active_flavour():
     server = create_server(backend=None, policy=policy.Policy(frozenset(policy.ALL_CAPABILITIES)),
                            flavour="core")

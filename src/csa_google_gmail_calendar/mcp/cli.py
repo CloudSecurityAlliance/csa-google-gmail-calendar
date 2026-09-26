@@ -58,6 +58,7 @@ from typing import Any
 
 from .. import __version__
 from .. import auth as auth_mod
+from .._attachments import download_policy_from_env
 from .._attachments import from_env as attachment_policy_from_env
 from ..backend import ApiBackend
 from ..policy import PolicyBackend
@@ -116,6 +117,11 @@ environment:
   CSA_GGC_CLIENT_SECRETS OAuth client secrets JSON (`login`/`authenticate` only; defaults to
                          ~/.csa_google_gmail_calendar/client_secret.json if that exists)
   CSA_GGC_ATTACH_DIR     directory outgoing mail may attach files from (unset: attachments off)
+  CSA_GGC_DOWNLOAD_DIR   directory get_attachment writes downloaded attachments to (unset:
+                         downloads off). Must NOT be CSA_GGC_ATTACH_DIR, or a directory nested
+                         inside/around it - the server refuses to start if they overlap, since
+                         a stranger's downloaded attachment landing in the directory outgoing
+                         mail reads from is exactly the bug this separation closes.
   CSA_GGC_FLAVOUR        core|google|full - which tools are REGISTERED, not which refuse
                          (default full - no restriction beyond CSA_GGC_CAPABILITIES). See
                          `describe_configuration`'s own output for what the active flavour
@@ -162,13 +168,18 @@ def main(argv: Sequence[str] | None = None, env: Mapping[str, str] | None = None
     # discovery-client construction it enables) happens on each worker thread's OWN first tool
     # call, not here and not shared across threads - see `_LazyApiBackend`'s own docstring
     # above for why a single shared instance is a confidentiality risk, not just a style
-    # choice. `attach_policy` reads
-    # `CSA_GGC_ATTACH_DIR` from the real process environment (`_attachments.from_env`,
-    # like `settings.token_path` above it) rather than from the `env` mapping this function
-    # was handed, matching `_config.py`'s own note on why `token_path` does the same.
+    # choice. `attach_policy`/`download_policy` read
+    # `CSA_GGC_ATTACH_DIR`/`CSA_GGC_DOWNLOAD_DIR` from the real process environment
+    # (`_attachments.from_env`/`download_policy_from_env`, like `settings.token_path` above it)
+    # rather than from the `env` mapping this function was handed, matching `_config.py`'s own
+    # note on why `token_path` does the same. `create_server` itself refuses (via
+    # `check_directories_disjoint`) if the two ever resolve to the same or overlapping
+    # directories - see `_attachments.py`'s module docstring for why that configuration is not
+    # merely discouraged but made impossible to hold.
     backend = PolicyBackend(_LazyApiBackend(settings), policy)
     attach_policy = attachment_policy_from_env()
+    download_policy = download_policy_from_env()
     flavour = flavour_from_env(env)
-    create_server(backend, policy, flavour=flavour, attach_policy=attach_policy).run(
-        transport="stdio")
+    create_server(backend, policy, flavour=flavour, attach_policy=attach_policy,
+                 download_policy=download_policy).run(transport="stdio")
     return 0

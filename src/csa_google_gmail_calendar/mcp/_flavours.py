@@ -41,6 +41,19 @@ no mail or calendar authority of their own, and an operator who has narrowed a d
 `core` still needs to see what is configured, run the demo, report a problem, and learn the
 account's own address. `ALWAYS_REGISTERED` names this set once so the reasoning is not repeated,
 or drifted, at each call site.
+
+**The name over-promises by one member (fix round, final whole-branch review, CINO
+2026-09-26).** Despite its name, membership here is NOT "always registered, full stop" - it is
+"exempt from FLAVOUR filtering specifically", which is all this module ever decides (see this
+docstring's own opening line). Six of the seven members are ALSO gated `None` in
+`TOOL_CAPABILITIES` (`_capabilities.py`), so for them the two properties coincide and the name
+reads as literally true. `whoami` is the exception: it is capability-gated (the same
+`policy.MAIL_READ` gate as `get_profile`, whose Backend method it calls - see
+`_tools/mail_read.py`), so narrowing `CSA_GGC_CAPABILITIES` to exclude `mail.read` makes
+`whoami` disappear at registration time, flavour untouched. Documented here rather than
+renamed, to avoid a wider, purely-cosmetic diff across `_tools/__init__.py`,
+`test_config_tools.py` and this module's own call sites for a distinction the docstring above
+already draws correctly - only the constant's NAME reads wider than its actual guarantee.
 """
 from __future__ import annotations
 

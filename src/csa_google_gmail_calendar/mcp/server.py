@@ -1,4 +1,5 @@
-"""`create_server(backend, policy, flavour="full", attach_policy=None)` -> MCPServer.
+"""`create_server(backend, policy, flavour="full", attach_policy=None, download_policy=None)`
+-> MCPServer.
 
 ## A disabled capability means an absent tool, not a refusing one
 
@@ -48,7 +49,7 @@ from typing import cast
 from mcp.server import MCPServer
 
 from .. import __version__
-from .._attachments import AttachmentPolicy
+from .._attachments import AttachmentPolicy, DownloadPolicy, check_directories_disjoint
 from ..backend import Backend
 from ..policy import Policy
 from ._config import settings_from_env
@@ -90,19 +91,29 @@ report it as unsupported, and do not reach for another integration to do it inst
 
 
 def create_server(backend: Backend | None, policy: Policy, flavour: str = "full",
-                  attach_policy: AttachmentPolicy | None = None) -> MCPServer:
-    """Build the server. `backend`/`policy`/`attach_policy` are typically a `PolicyBackend`
-    wrapping an `ApiBackend`, the same `Policy` the `PolicyBackend` was built with, and an
-    `AttachmentPolicy` (or `None` if `CSA_GGC_ATTACH_DIR` is unset) - see `cli.py` for how the
+                  attach_policy: AttachmentPolicy | None = None,
+                  download_policy: DownloadPolicy | None = None) -> MCPServer:
+    """Build the server. `backend`/`policy`/`attach_policy`/`download_policy` are typically a
+    `PolicyBackend` wrapping an `ApiBackend`, the same `Policy` the `PolicyBackend` was built
+    with, an `AttachmentPolicy` (or `None` if `CSA_GGC_ATTACH_DIR` is unset), and a
+    `DownloadPolicy` (or `None` if `CSA_GGC_DOWNLOAD_DIR` is unset) - see `cli.py` for how the
     stdio entry point assembles them from the environment. Tests pass a `FakeBackend` (or
     `None`, while no tool here reads it) and a `Policy` directly.
+
+    `check_directories_disjoint` runs first, before anything else: this is the one place both
+    configured roots are ever in hand together, and a deployment with `CSA_GGC_ATTACH_DIR` and
+    `CSA_GGC_DOWNLOAD_DIR` set to the same (or a nested) directory must fail here, at
+    construction, rather than build a server that can be walked into the overwrite chain those
+    two variables exist to keep apart (see `_attachments.py`'s module docstring).
     """
+    check_directories_disjoint(attach_policy, download_policy)
     app = MCPServer(name="csa-google-gmail-calendar", version=__version__,
                     instructions=INSTRUCTIONS)
     # Stashed for tasks 11/12's register_mail_*_tools/register_calendar_*_tools calls, added
     # below this line as they land - see the module docstring.
     app._csa_backend = backend                # type: ignore[attr-defined]
     app._csa_attach_policy = attach_policy     # type: ignore[attr-defined]
+    app._csa_download_policy = download_policy # type: ignore[attr-defined]
     app._csa_flavour = flavour                 # type: ignore[attr-defined]
 
     settings = settings_from_env(os.environ, policy)
@@ -116,12 +127,12 @@ def create_server(backend: Backend | None, policy: Policy, flavour: str = "full"
     # once, here, rather than each tool module re-deriving the same "this can't actually be
     # None when called" judgement.
     mail_backend = cast(Backend, backend)
-    register_mail_read_tools(app, mail_backend, policy, attach_policy)
+    register_mail_read_tools(app, mail_backend, policy, download_policy)
     register_mail_write_tools(app, mail_backend, policy, attach_policy)
     register_mail_send_tools(app, mail_backend, policy, attach_policy)
     register_calendar_read_tools(app, mail_backend, policy)
     register_calendar_write_tools(app, mail_backend, policy)
-    register_config_tools(app, settings, flavour, attach_policy)
+    register_config_tools(app, settings, flavour, attach_policy, download_policy)
     register_demo_tools(app)
     register_feedback_tools(app, settings, flavour)
 

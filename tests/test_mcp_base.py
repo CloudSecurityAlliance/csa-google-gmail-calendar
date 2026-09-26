@@ -51,6 +51,68 @@ def test_errors_returns_a_scrubbed_result_on_success_sync():
     assert "␛" in out["subject"]
 
 
+def test_errors_scrubs_a_bidi_override_out_of_a_successful_result_sync():
+    """FIX 3 (final whole-branch review): a field with no `transformations` slot of its own -
+    e.g. an `AttachmentRef.filename` - must still lose a Trojan-Source bidi override on the
+    way out, not just C0/DEL."""
+    def fn():
+        return {"filename": "invoice‮fdp.exe"}
+    wrapped = _base._errors(fn)
+    out = wrapped()
+    assert "‮" not in out["filename"]
+
+
+def test_errors_scrubs_the_refusal_message_too_sync():
+    """FIX 2 (final whole-branch review): `_attachments._echo` deliberately echoes a
+    caller-supplied path into a `PolicyError`, which renders in a terminal with any control
+    sequence it carries intact unless this seam scrubs it - exactly the human/model asymmetry
+    `_untrusted.py` exists to close, reachable through a refusal instead of a result."""
+    def fn():
+        raise exc.PolicyError("'evil\x1b[2Kpath.txt' resolves outside the root")
+    wrapped = _base._errors(fn)
+    with pytest.raises(ToolError) as excinfo:
+        wrapped()
+    assert "\x1b" not in str(excinfo.value)
+    assert "␛" in str(excinfo.value)
+
+
+def test_errors_scrubs_a_bidi_override_out_of_a_refusal_message_sync():
+    def fn():
+        raise exc.PolicyError("'invoice‮fdp.exe' resolves outside the root")
+    wrapped = _base._errors(fn)
+    with pytest.raises(ToolError) as excinfo:
+        wrapped()
+    assert "‮" not in str(excinfo.value)
+
+
+def test_errors_logs_the_suspicious_count_for_a_scrubbed_success_sync(caplog):
+    def fn():
+        return {"filename": "invoice‮fdp.exe"}
+    wrapped = _base._errors(fn)
+    with caplog.at_level("INFO", logger="csa_google_gmail_calendar.mcp._tools._base"):
+        wrapped()
+    assert any("suspicious character" in r.message for r in caplog.records)
+
+
+def test_errors_logs_the_suspicious_count_for_a_scrubbed_refusal_sync(caplog):
+    def fn():
+        raise exc.PolicyError("'invoice‮fdp.exe' resolves outside the root")
+    wrapped = _base._errors(fn)
+    with caplog.at_level("INFO", logger="csa_google_gmail_calendar.mcp._tools._base"):
+        with pytest.raises(ToolError):
+            wrapped()
+    assert any("suspicious character" in r.message for r in caplog.records)
+
+
+def test_errors_does_not_log_a_count_when_nothing_is_suspicious_sync(caplog):
+    def fn():
+        return {"subject": "ordinary subject"}
+    wrapped = _base._errors(fn)
+    with caplog.at_level("INFO", logger="csa_google_gmail_calendar.mcp._tools._base"):
+        wrapped()
+    assert not any("suspicious character" in r.message for r in caplog.records)
+
+
 @pytest.mark.parametrize("raised,expect", [
     (exc.PolicyError("no such capability"), "no such capability"),
     (exc.NotFoundError("event e1 not found"), "not found: event e1 not found"),
@@ -85,6 +147,20 @@ def test_errors_returns_a_scrubbed_result_on_success_async():
     wrapped = _base._errors(fn)
     out = _run(wrapped())
     assert "\x1b" not in out[0]
+
+
+def test_errors_scrubs_the_refusal_message_too_async():
+    """FIX 2, async branch - the two branches of `_errors` share `_refused`, but each has its
+    own `except`/`return` wiring, so both are exercised directly rather than assuming parity."""
+    async def fn():
+        raise exc.PolicyError("'evil\x1b[2Kpath.txt' resolves outside the root")
+    wrapped = _base._errors(fn)
+
+    async def call():
+        await wrapped()
+    with pytest.raises(ToolError) as excinfo:
+        _run(call())
+    assert "\x1b" not in str(excinfo.value)
 
 
 def test_refuse_unknown_arguments_passes_through_declared_arguments_sync():

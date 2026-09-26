@@ -99,14 +99,14 @@ def test_attachments_without_a_configured_dir_refuse_with_the_variable_name():
               attachments=["anything.pdf"])
 
 
-def test_get_attachment_writes_to_the_attachment_dir_and_returns_the_path(tmp_path):
-    from csa_google_gmail_calendar._attachments import AttachmentPolicy
-    d = tmp_path / "a"
+def test_get_attachment_writes_to_the_download_dir_and_returns_the_path(tmp_path):
+    from csa_google_gmail_calendar._attachments import DownloadPolicy
+    d = tmp_path / "d"
     d.mkdir()
     fake = FakeBackend(messages={"m1": {"id": "m1", "threadId": "m1"}},
                        attachments={"att-1": {"data": "aGVsbG8", "size": 5}})
     s = create_server(backend=fake, policy=policy.Policy(),
-                      attach_policy=AttachmentPolicy(str(d)))
+                      download_policy=DownloadPolicy(str(d)))
     out = _call(s, "get_attachment", message_id="m1", attachment_id="att-1",
                 filename="note.txt")
     assert (d / "note.txt").read_bytes() == b"hello"
@@ -115,13 +115,13 @@ def test_get_attachment_writes_to_the_attachment_dir_and_returns_the_path(tmp_pa
 
 def test_a_downloaded_attachment_filename_cannot_escape_the_dir(tmp_path):
     """The filename comes from the MESSAGE, which a stranger wrote."""
-    from csa_google_gmail_calendar._attachments import AttachmentPolicy
-    d = tmp_path / "a"
+    from csa_google_gmail_calendar._attachments import DownloadPolicy
+    d = tmp_path / "d"
     d.mkdir()
     fake = FakeBackend(messages={"m1": {"id": "m1", "threadId": "m1"}},
                        attachments={"att-1": {"data": "aGVsbG8", "size": 5}})
     s = create_server(backend=fake, policy=policy.Policy(),
-                      attach_policy=AttachmentPolicy(str(d)))
+                      download_policy=DownloadPolicy(str(d)))
     with pytest.raises(Exception, match="outside|invalid"):
         _call(s, "get_attachment", message_id="m1", attachment_id="att-1",
               filename="../../escaped.txt")
@@ -357,24 +357,59 @@ def test_reply_refuses_when_the_original_has_no_from_header():
 def test_get_attachment_without_a_configured_dir_refuses_with_the_variable_name():
     fake = FakeBackend(messages={"m1": {"id": "m1"}},
                        attachments={"att-1": {"data": "aGVsbG8", "size": 5}})
-    s = create_server(backend=fake, policy=policy.Policy(), attach_policy=None)
-    with pytest.raises(Exception, match="CSA_GGC_ATTACH_DIR"):
+    s = create_server(backend=fake, policy=policy.Policy(), download_policy=None)
+    with pytest.raises(Exception, match="CSA_GGC_DOWNLOAD_DIR"):
         _call(s, "get_attachment", message_id="m1", attachment_id="att-1", filename="a.txt")
 
 
 def test_get_attachment_refuses_a_symlinked_escape_even_without_dotdot(tmp_path):
-    """`AttachmentPolicy.resolve`'s own containment lesson, applied on the write side too: the
+    """`DownloadPolicy.resolve`'s own containment lesson, applied on the write side too: the
     check must run on the RESOLVED path, because a symlink can point outside the root under a
     perfectly innocent-looking, dot-dot-free name."""
-    from csa_google_gmail_calendar._attachments import AttachmentPolicy
-    d = tmp_path / "a"
+    from csa_google_gmail_calendar._attachments import DownloadPolicy
+    d = tmp_path / "d"
     d.mkdir()
     (tmp_path / "outside").mkdir()
     (d / "escape").symlink_to(tmp_path / "outside")
     fake = FakeBackend(messages={"m1": {"id": "m1"}},
                        attachments={"att-1": {"data": "aGVsbG8", "size": 5}})
     s = create_server(backend=fake, policy=policy.Policy(),
-                      attach_policy=AttachmentPolicy(str(d)))
+                      download_policy=DownloadPolicy(str(d)))
     with pytest.raises(Exception, match="outside"):
         _call(s, "get_attachment", message_id="m1", attachment_id="att-1",
               filename="escape/pwned.txt")
+
+
+def test_get_attachment_refuses_to_overwrite_an_existing_file_in_the_download_dir(tmp_path):
+    """FIX 1 (final whole-branch review, CINO 2026-09-26) - the end-to-end chain: a stranger's
+    message names its attachment the same as a real file already sitting in the download
+    directory (e.g. one the user themselves put there, or - before this fix - one
+    `send_message` reads outgoing attachments from). Downloading it must refuse rather than
+    silently overwrite, and the original bytes must survive untouched."""
+    from csa_google_gmail_calendar._attachments import DownloadPolicy
+    d = tmp_path / "d"
+    d.mkdir()
+    real_file = d / "q3-budget.pdf"
+    real_file.write_bytes(b"THE USER'S REAL BUDGET")
+    fake = FakeBackend(messages={"m1": {"id": "m1"}},
+                       attachments={"att-1": {"data": "aGVsbG8", "size": 5}})
+    s = create_server(backend=fake, policy=policy.Policy(),
+                      download_policy=DownloadPolicy(str(d)))
+    with pytest.raises(Exception, match="already exists"):
+        _call(s, "get_attachment", message_id="m1", attachment_id="att-1",
+              filename="q3-budget.pdf")
+    assert real_file.read_bytes() == b"THE USER'S REAL BUDGET"
+
+
+def test_download_dir_and_attach_dir_must_be_different_directories(tmp_path):
+    """The misconfiguration that recreates the whole bug: `CSA_GGC_ATTACH_DIR` and
+    `CSA_GGC_DOWNLOAD_DIR` pointed at the SAME directory must be impossible to hold, refused at
+    server construction naming both variables, rather than merely discouraged in prose."""
+    from csa_google_gmail_calendar._attachments import AttachmentPolicy, DownloadPolicy
+    same = tmp_path / "same"
+    same.mkdir()
+    with pytest.raises(Exception, match="CSA_GGC_ATTACH_DIR.*CSA_GGC_DOWNLOAD_DIR|"
+                                        "CSA_GGC_DOWNLOAD_DIR.*CSA_GGC_ATTACH_DIR"):
+        create_server(backend=FakeBackend(), policy=policy.Policy(),
+                     attach_policy=AttachmentPolicy(str(same)),
+                     download_policy=DownloadPolicy(str(same)))
