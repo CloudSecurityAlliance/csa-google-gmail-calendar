@@ -123,17 +123,62 @@ names the variable that would enable it, as every other capability here already 
 registrar, MX presence and CT first-seen are four signals sharing one resolver, one cache, and one
 disclosure decision. The hook is the resolver; the signals are its callers.
 
-## 4. The output contract, and the one rule that matters most
+## 4. The output contract: notice, do not judge
 
-**There is no green.**
+**The analyser does not decide whether a message is dangerous. It says what it noticed.**
 
-§9 records why: a phishing mail impersonating a brand *passed SPF, DKIM and DMARC honestly*,
-because the attacker owned the sending domain. A checker built on those alone "would have marked
-that mail green and lent it authority."
+This is stronger than "there is no green", which is where this section started. §9 records why
+there is no *safe* verdict — the motivating phishing mail passed SPF, DKIM and DMARC honestly, so
+a checker built on those "would have marked it green and lent it authority". But the same argument
+runs the other way: a verdict of *dangerous* is a judgement the analyser is not equipped to make
+either, because it cannot see the thing that decides it.
 
-So the vocabulary has no *safe* state. It has:
+### What decides severity is the ask, and the analyser cannot see it
 
-- **`noted`** — an observation, with what it is and what would explain it innocently
+The identical set of observations is unremarkable on *"are you free for coffee Thursday?"* and
+serious on *"please send the Q3 payroll file to this address"*. Nothing in the headers distinguishes
+them. The **ask** is the amplifier, and reading it is comprehension, not parsing.
+
+So the division of labour is three-way:
+
+| | does what | can see |
+|---|---|---|
+| **the server** | notices, states facts, says what it could not check | headers, the thread, the corpus |
+| **the model** | composes observations *against what is being asked* | all of the above, plus the request |
+| **the person** | confirms, out of band | the relationship, the context, the stakes |
+
+### What a finding looks like
+
+Not a score, not a label. An observation, what would innocently explain it, and — when several
+compose — the composition:
+
+> Two things changed in this thread. Three recipients are now at `partnerco-invoices.example`,
+> a domain that has never appeared in it before; the established one is `partnerco.example`.
+> Separately, this message reads differently from the 11 previous messages from this sender —
+> shorter, more urgent, and it opens differently.
+>
+> Either alone is often innocent: people add colleagues, and people write differently when
+> rushed. Together, on a message asking for a payment detail to change, they are the shape of a
+> compromised account.
+>
+> **Confirm this request by a channel that is not this email thread** — a number you already had,
+> not one in this message.
+
+Three properties of that:
+
+- **It states what was observed**, so a person can disagree with the observation rather than with
+  a verdict they cannot inspect.
+- **It offers the innocent explanation.** A tool that only ever tells you things are suspicious
+  gets muted, and then it is worth nothing.
+- **It ends in an action that works.** For business email compromise and thread hijacking,
+  out-of-band confirmation is not *one* mitigation, it is the *only* reliable one. Better
+  detection does not defeat a genuine compromised account; a phone call does.
+
+### The four categories stay, as shapes of observation
+
+Not verdicts — descriptions of what kind of thing was noticed:
+
+- **`noted`** — an observation, with what would explain it innocently
 - **`unusual`** — a departure from this mailbox's own pattern
 - **`inconsistent`** — two things in the message contradict each other
 - **`unavailable`** — the check could not run (no network, no history, lookup failed)
@@ -142,8 +187,13 @@ So the vocabulary has no *safe* state. It has:
 **absence of information must never render as a positive answer.** A domain whose age could not be
 determined is not a young domain and is not an old one. Say which check did not run, and why.
 
-Every finding carries **what would resolve it**: "this address has not appeared in this thread
-before — confirm the change by a channel that is not this email" is worth more than a score.
+### Composition belongs to the model, not to a rule
+
+Two weak observations together are often worth more than either alone — but *which* pairs matter
+depends on the ask, and enumerating them in the server would mean encoding a threat model in a
+place that cannot see the request. The server's job is to make composition *possible*: emit
+observations that name their subject precisely enough to be reasoned about together, and say
+plainly when it could not look.
 
 ## 4b. The mailbox is the intelligence source, and the AI is what makes using it affordable
 
@@ -233,6 +283,14 @@ and building the hard check while inventing the output contract gets both wrong.
 
 ## 6. What this must not become
 
-A score. A single number invites a threshold, a threshold invites tuning, and a tuned threshold
-becomes a green tick with extra steps — which §9 already identifies as the failure mode that lends
-authority to the exact message it should question.
+**A score.** A single number invites a threshold, a threshold invites tuning, and a tuned
+threshold becomes a green tick with extra steps — which §9 already identifies as the failure mode
+that lends authority to the exact message it should question.
+
+**A verdict.** "Dangerous" is as unearned as "safe": the analyser cannot see what is being asked,
+and that is what decides. It notices; the model composes against the request; the person confirms
+out of band.
+
+**A blocker.** Nothing here should stop mail being read or sent on a heuristic. A control that
+interrupts ordinary work gets disabled, and a disabled control protects nothing — the goal is that
+a person reads one sentence and picks up the phone, not that the software refuses.
