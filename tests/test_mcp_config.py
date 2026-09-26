@@ -69,3 +69,20 @@ def test_startup_warnings_flags_a_missing_oauth_client(tmp_path, monkeypatch):
     settings = _config.settings_from_env({}, policy.Policy())
     warnings = _config.startup_warnings(settings)
     assert any("CSA_GGC_CLIENT_SECRETS" in w for w in warnings)
+
+
+def test_startup_says_nothing_about_client_secrets_when_one_is_configured(tmp_path):
+    """The quiet branch, which CI measured as uncovered while the laptop did not.
+
+    `startup_warnings` appends a "no OAuth client secrets configured" line only when none is
+    set. Every existing test ran with it unset, so the *configured* path — the ordinary one for
+    anyone who has actually installed this — was never asserted. A warning that fires when it
+    should is half the property; not firing when it should not is the other half.
+    """
+    secrets = tmp_path / "client_secret.json"
+    secrets.write_text('{"installed": {"client_id": "x", "project_id": "p"}}')
+    settings = _config.Settings(token_path=str(tmp_path / "t.json"),
+                        client_secrets_path=str(secrets), policy=policy.Policy())
+    lines = _config.startup_warnings(settings)
+    assert not any("no OAuth client secrets" in line for line in lines)
+    assert any("capabilities enabled" in line for line in lines)

@@ -4,7 +4,12 @@ import sys
 
 import pytest
 
-from csa_google_gmail_calendar._attachments import AttachmentPolicy, from_env
+from csa_google_gmail_calendar._attachments import (
+    AttachmentPolicy,
+    DownloadPolicy,
+    check_directories_disjoint,
+    from_env,
+)
 from csa_google_gmail_calendar.exceptions import PolicyError
 
 
@@ -212,3 +217,25 @@ def test_case_variant_of_the_root_never_escapes_the_containment_check(root):
         pytest.skip("this tmp path happens to be case-sensitive on this run")
     with pytest.raises(PolicyError, match="outside"):
         AttachmentPolicy(str(root)).resolve(str(variant))
+
+
+def test_two_different_names_for_one_directory_are_refused_on_every_platform(tmp_path, monkeypatch):
+    """The inode check refuses, independent of whether this filesystem can produce the case.
+
+    `is_relative_to` above already catches identical paths, so `samefile` only matters when two
+    *textually different* paths share an inode. On macOS APFS a case-variant does that; on a
+    case-sensitive Linux filesystem it genuinely cannot, which is why the companion test above is
+    `skipif(darwin)` — and why CI measured this branch as uncovered while the laptop did not.
+
+    Skipping it on Linux would leave the *logic* untested on the platform this actually deploys to.
+    So this asserts the rule rather than the filesystem: when `samefile` reports one directory, the
+    configuration is refused. That is the property; the case-variant is only one way to reach it,
+    and a bind mount or a future filesystem quirk is another.
+    """
+    attach = tmp_path / "attach"
+    attach.mkdir()
+    download = tmp_path / "download"
+    download.mkdir()
+    monkeypatch.setattr(os.path, "samefile", lambda a, b: True)
+    with pytest.raises(PolicyError, match="same directory"):
+        check_directories_disjoint(AttachmentPolicy(str(attach)), DownloadPolicy(str(download)))
