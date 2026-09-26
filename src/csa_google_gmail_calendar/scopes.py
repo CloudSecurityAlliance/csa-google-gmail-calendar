@@ -10,6 +10,16 @@ RANK is a total order per API, lowest = least privilege. Scopes NOT in RANK are 
 name rather than silently winning: the `gmail.addons.*` family is add-on-context-only and
 `calendar.app.created` is restricted to app-created calendars, so neither is a scope this
 server would request, and neither should be able to outrank one it would.
+
+RANK is a deliberate totalisation of what is really only a partial order. A Discovery method's
+`scopes` list is OR-alternatives — any one of them suffices — so all `narrowest()` ever needs is
+"which of these candidates is least", never a global comparison between two arbitrary scopes.
+Some pairs genuinely aren't comparable (`gmail.settings.basic` grants nothing over mailbox
+content and nothing is narrower than it in that dimension; `calendar.settings.readonly` reads
+account settings, not events, so it isn't "narrower than" event-access scopes either) — RANK
+picks a total order anyway because a method needs one answer. A future scope Google adds could
+be misranked the same way `calendar.calendars.readonly` was once simply omitted (see the
+completeness test in tests/test_scopes.py): omission and misplacement are the same class of risk.
 """
 from __future__ import annotations
 
@@ -35,6 +45,9 @@ _CALENDAR_ORDER = (
     f"{_BASE}calendar.freebusy",
     f"{_BASE}calendar.settings.readonly",
     f"{_BASE}calendar.calendarlist.readonly",
+    f"{_BASE}calendar.calendars.readonly",  # read-only metadata (title, timezone) for a single
+                                             # calendar, as against calendarlist.readonly above,
+                                             # which reads the user's subscription list instead
     f"{_BASE}calendar.events.owned.readonly",
     f"{_BASE}calendar.events.readonly",
     f"{_BASE}calendar.readonly",
