@@ -20,11 +20,16 @@ from __future__ import annotations
 import sys
 from typing import Any, cast
 
+# `pragma: no cover` on the `if`, which excludes BOTH arms - and that is the point. A one-arm
+# pragma is only ever right on half the matrix: the `else` was excluded for >=3.12, so 3.10 and
+# 3.11 then reported the `if` arm uncovered instead. Whichever interpreter runs, exactly one arm
+# executes and the other is structurally unreachable on it; no monkeypatch of `sys.version_info`
+# re-runs a module-level import that already ran. Excluding the version fork entirely is the
+# honest statement: this is a compatibility shim, not logic, and neither arm is ever "missing
+# a test".
 if sys.version_info >= (3, 12):
-    from typing import TypedDict
+    from typing import TypedDict  # pragma: no cover
 else:
-    # Only ever runs under Python <3.12 - see `_schemas.py`'s identical shim for why this is
-    # structurally unreachable on THIS interpreter rather than merely untested.
     from typing_extensions import TypedDict  # pragma: no cover
 
 from mcp.server import MCPServer
