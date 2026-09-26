@@ -23,6 +23,13 @@ def test_readonly_beats_modify_for_a_gmail_read():
     ])
     assert got == f"{B}gmail.readonly"
 
+def test_narrowest_refuses_an_api_with_no_declared_order():
+    """`_ORDERS` only knows `gmail` and `calendar`. Asking about a third api is a caller bug --
+    there is no lattice to rank against -- and must fail loudly rather than silently picking an
+    arbitrary candidate."""
+    with pytest.raises(ValueError, match="no scope order"):
+        scopes.narrowest("drive", [f"{B}drive.readonly"])
+
 def test_bare_calendar_is_the_broadest_not_the_narrowest():
     """Every Calendar row was wrong: bare `calendar` is full access and the shortest string."""
     got = scopes.narrowest("calendar", [

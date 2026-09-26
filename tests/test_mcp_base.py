@@ -116,6 +116,10 @@ def test_errors_does_not_log_a_count_when_nothing_is_suspicious_sync(caplog):
 @pytest.mark.parametrize("raised,expect", [
     (exc.PolicyError("no such capability"), "no such capability"),
     (exc.NotFoundError("event e1 not found"), "not found: event e1 not found"),
+    (exc.AccessError("not permitted"), "permission denied: not permitted"),
+    (exc.AuthError("no cached credentials"), "no cached credentials"),
+    (exc.ConflictError("etag mismatch"), "conflict: etag mismatch"),
+    (exc.UnsupportedOperation("not implemented here"), "not implemented here"),
     (exc.ApiError("Google API error 500"), "Google rejected the request: Google API error 500"),
     (ValueError("bad time range"), "invalid argument: bad time range"),
 ])

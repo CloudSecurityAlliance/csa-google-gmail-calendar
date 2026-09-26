@@ -23,7 +23,9 @@ from typing import Any, cast
 if sys.version_info >= (3, 12):
     from typing import TypedDict
 else:
-    from typing_extensions import TypedDict
+    # Only ever runs under Python <3.12 - see `_schemas.py`'s identical shim for why this is
+    # structurally unreachable on THIS interpreter rather than merely untested.
+    from typing_extensions import TypedDict  # pragma: no cover
 
 from mcp.server import MCPServer
 

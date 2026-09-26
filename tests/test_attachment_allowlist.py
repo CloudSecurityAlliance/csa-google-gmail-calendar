@@ -141,6 +141,22 @@ def test_embedded_nul_byte_is_a_policy_refusal_not_a_bare_valueerror(root):
         AttachmentPolicy(str(root)).resolve("ok.pdf\x00.txt")
 
 
+def test_an_embedded_nul_byte_in_the_root_itself_is_a_policy_refusal_at_construction(tmp_path):
+    """The same `Path.resolve()` ValueError as above, but from the CONSTRUCTOR's own resolve of
+    `root` (`CSA_GGC_ATTACH_DIR` itself), not from a per-call `.resolve()` on a caller-supplied
+    filename - a separate try/except, so covering one does not cover the other."""
+    with pytest.raises(PolicyError, match="not a valid path"):
+        AttachmentPolicy(str(tmp_path) + "\x00bad")
+
+
+def test_a_long_offending_path_is_echoed_truncated_not_reproduced_whole(root):
+    """The echoed path is capped at 200 chars: it may come from a model and is unbounded, and
+    exception messages tend to end up in logs."""
+    long_name = "a" * 250 + ".pdf"
+    with pytest.raises(PolicyError, match="truncated"):
+        AttachmentPolicy(str(root)).resolve(long_name)
+
+
 def test_deep_dotdot_walking_above_the_filesystem_root_is_still_refused_as_outside(root):
     """Enough `../` segments to walk past `/` and back down into a real path elsewhere on
     disk. resolve() collapses this like any other `..` chain; the refusal is still the

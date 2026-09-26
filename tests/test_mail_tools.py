@@ -74,6 +74,29 @@ def test_reply_sets_in_reply_to_from_the_original_message_id():
     assert "<orig@example.org>" in _raw_text(fake.sent[-1])
 
 
+def test_reply_to_a_message_whose_thread_is_not_in_the_store_raises_notfound():
+    """A real received message always arrives already inside a thread - this is the malformed
+    case, and `reply`'s Backend call must surface it as `not found`, not proceed as if the
+    thread existed."""
+    fake = FakeBackend(messages={"m1": {"id": "m1", "threadId": "ghost-thread",
+                                        "payload": {"headers": [
+                                            {"name": "From", "value": "s@example.org"}]}}},
+                       profile={"emailAddress": "me@example.com"})
+    s = create_server(backend=fake, policy=policy.Policy())
+    with pytest.raises(Exception, match="not found"):
+        _call(s, "reply", message_id="m1", body="ack")
+
+
+def test_reply_all_to_a_message_whose_thread_is_not_in_the_store_raises_notfound():
+    fake = FakeBackend(messages={"m1": {"id": "m1", "threadId": "ghost-thread",
+                                        "payload": {"headers": [
+                                            {"name": "From", "value": "s@example.org"}]}}},
+                       profile={"emailAddress": "me@example.com"})
+    s = create_server(backend=fake, policy=policy.Policy())
+    with pytest.raises(Exception, match="not found"):
+        _call(s, "reply_all", message_id="m1", body="ack")
+
+
 def test_reply_subject_gets_one_re_prefix_not_two():
     fake = FakeBackend(messages={"m1": {"id": "m1", "threadId": "t1", "payload": {"headers": [
         {"name": "From", "value": "s@example.org"},
@@ -127,6 +150,37 @@ def test_a_downloaded_attachment_filename_cannot_escape_the_dir(tmp_path):
               filename="../../escaped.txt")
 
 
+def test_get_attachment_for_an_unknown_message_raises_notfound(tmp_path):
+    from csa_google_gmail_calendar._attachments import DownloadPolicy
+    d = tmp_path / "d"
+    d.mkdir()
+    fake = FakeBackend()
+    s = create_server(backend=fake, policy=policy.Policy(),
+                      download_policy=DownloadPolicy(str(d)))
+    with pytest.raises(Exception, match="not found"):
+        _call(s, "get_attachment", message_id="nope", attachment_id="att-1",
+              filename="note.txt")
+
+
+def test_get_attachment_for_an_unknown_attachment_id_raises_notfound(tmp_path):
+    from csa_google_gmail_calendar._attachments import DownloadPolicy
+    d = tmp_path / "d"
+    d.mkdir()
+    fake = FakeBackend(messages={"m1": {"id": "m1", "threadId": "m1"}})
+    s = create_server(backend=fake, policy=policy.Policy(),
+                      download_policy=DownloadPolicy(str(d)))
+    with pytest.raises(Exception, match="not found"):
+        _call(s, "get_attachment", message_id="m1", attachment_id="nope",
+              filename="note.txt")
+
+
+def test_get_draft_for_an_unknown_id_raises_notfound():
+    fake = FakeBackend()
+    s = create_server(backend=fake, policy=policy.Policy())
+    with pytest.raises(Exception, match="not found"):
+        _call(s, "get_draft", draft_id="nope")
+
+
 def test_trash_email_exists_and_delete_email_does_not():
     s = create_server(backend=FakeBackend(), policy=policy.Policy())
     names = {t.name for t in s._tool_manager.list_tools()}
@@ -174,6 +228,15 @@ def test_search_messages_reports_truncation_explicitly():
     assert out["next_page_token"] is not None
 
 
+def test_search_messages_with_room_to_spare_reports_no_truncation():
+    fake = FakeBackend(messages={f"m{i}": _message(id=f"m{i}") for i in range(2)})
+    s = create_server(backend=fake, policy=policy.Policy())
+    out = _call(s, "search_messages", query="", limit=5)
+    assert len(out["messages"]) == 2
+    assert out["truncated"] is False
+    assert out["next_page_token"] is None
+
+
 def test_get_message_truncates_the_body_by_default_and_discloses_it():
     long_body = "x" * 5000
     fake = FakeBackend(messages={"m1": {
@@ -200,6 +263,23 @@ def test_get_thread_returns_message_summaries_not_full_bodies():
     assert out["messages"][0]["id"] == "m1"
     assert out["messages"][0]["sender"] == "a@example.com"
     assert "body_markdown" not in out["messages"][0]
+
+
+def test_get_thread_for_an_unknown_id_raises_notfound():
+    fake = FakeBackend()
+    s = create_server(backend=fake, policy=policy.Policy())
+    with pytest.raises(Exception, match="not found"):
+        _call(s, "get_thread", thread_id="nope")
+
+
+def test_list_threads_query_excludes_a_thread_whose_messages_do_not_match():
+    fake = FakeBackend(
+        messages={"m1": _message(id="m1", threadId="t1", snippet="about the budget"),
+                 "m2": _message(id="m2", threadId="t2", snippet="lunch plans")},
+        threads={"t1": {}, "t2": {}})
+    s = create_server(backend=fake, policy=policy.Policy())
+    out = _call(s, "list_threads", query="budget")
+    assert [t["id"] for t in out["threads"]] == ["t1"]
 
 
 def test_list_threads_reports_truncation_explicitly():
@@ -263,6 +343,36 @@ def test_create_draft_update_draft_and_delete_draft_round_trip():
     assert created["id"] not in fake.drafts
 
 
+def test_update_draft_for_an_unknown_id_raises_notfound():
+    s = create_server(backend=FakeBackend(), policy=policy.Policy())
+    with pytest.raises(Exception, match="not found"):
+        _call(s, "update_draft", draft_id="nope", to=["a@example.com"], subject="s", body="b")
+
+
+def test_delete_draft_for_an_unknown_id_raises_notfound():
+    s = create_server(backend=FakeBackend(), policy=policy.Policy())
+    with pytest.raises(Exception, match="not found"):
+        _call(s, "delete_draft", draft_id="nope")
+
+
+def test_get_profile_with_nothing_seeded_raises_notfound():
+    s = create_server(backend=FakeBackend(), policy=policy.Policy())
+    with pytest.raises(Exception, match="not found"):
+        _call(s, "get_profile")
+
+
+def test_modify_message_labels_for_an_unknown_message_raises_notfound():
+    s = create_server(backend=FakeBackend(), policy=policy.Policy())
+    with pytest.raises(Exception, match="not found"):
+        _call(s, "modify_message_labels", message_id="nope", add=["STARRED"])
+
+
+def test_modify_thread_labels_for_an_unknown_thread_raises_notfound():
+    s = create_server(backend=FakeBackend(), policy=policy.Policy())
+    with pytest.raises(Exception, match="not found"):
+        _call(s, "modify_thread_labels", thread_id="nope", add=["STARRED"])
+
+
 def test_modify_message_and_thread_labels():
     fake = FakeBackend(messages={"m1": _message()}, threads={"t1": {}})
     s = create_server(backend=fake, policy=policy.Policy())
@@ -271,6 +381,15 @@ def test_modify_message_and_thread_labels():
     assert "UNREAD" not in fake.messages["m1"]["labelIds"]
     _call(s, "modify_thread_labels", thread_id="t1", add=["IMPORTANT"])
     assert "IMPORTANT" in fake.messages["m1"]["labelIds"]
+
+
+def test_adding_a_label_the_message_already_has_is_a_no_op_not_a_duplicate():
+    """`_add_labels` only appends a label that is not already present - adding one twice must
+    not duplicate it in `labelIds`."""
+    fake = FakeBackend(messages={"m1": _message(labelIds=["INBOX", "UNREAD", "STARRED"])})
+    s = create_server(backend=fake, policy=policy.Policy())
+    _call(s, "modify_message_labels", message_id="m1", add=["STARRED"])
+    assert fake.messages["m1"]["labelIds"].count("STARRED") == 1
 
 
 def test_archive_mark_and_label_tools():
@@ -317,6 +436,12 @@ def test_send_draft_puts_the_drafted_message_on_the_wire():
     _call(s, "send_draft", draft_id=created["id"])
     assert len(fake.sent) == 1
     assert created["id"] not in fake.drafts
+
+
+def test_send_draft_for_an_unknown_id_raises_notfound():
+    s = create_server(backend=FakeBackend(), policy=policy.Policy())
+    with pytest.raises(Exception, match="not found"):
+        _call(s, "send_draft", draft_id="nope")
 
 
 def test_forward_quotes_the_original_and_prefixes_fwd():

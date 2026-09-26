@@ -87,6 +87,19 @@ def test_authenticate_succeeds_when_the_user_accepts_and_the_browser_redirects(
     assert ctx.session.completed
 
 
+def test_authenticate_falls_through_to_the_flow_when_no_credential_is_cached(
+        tmp_path, monkeypatch):
+    """force=False (the default): `load_cached_credentials` raises `AuthError` for a token path
+    with nothing on it, which the probe swallows (`except exc.AuthError: pass`) rather than
+    treating as a reason to refuse - it means only 'not already authorized', not a failure, so
+    the function must still fall through to the ordinary elicitation flow below it."""
+    app, finished = _build_server_and_settings(tmp_path, monkeypatch)
+    ctx = _FakeContext(answer=AcceptedUrlElicitation())
+    out = _call_async(app, "authenticate", ctx)
+    assert out["status"] == "authorized"
+    assert finished == ["http://127.0.0.1:1/?state=x&code=y"]
+
+
 def test_authenticate_reports_declined_when_the_user_does_not_accept(tmp_path, monkeypatch):
     app, _ = _build_server_and_settings(tmp_path, monkeypatch)
     ctx = _FakeContext(answer="something-else")
@@ -233,6 +246,36 @@ def test_auth_status_reports_ready_with_no_refresh_available_when_expired_with_n
     out = auth_tools._auth_status_payload(str(token_path), [])
     assert out["status"] == "ready"
     assert "no refresh token is stored" in out["detail"]
+
+
+def test_auth_status_reports_ready_with_automatic_refresh_when_expired_with_a_refresh_token(
+        tmp_path):
+    """The other half of the expired-token detail: with a refresh token present, the next call
+    will refresh silently rather than fail - a different message from the no-refresh-token
+    case above, and neither is what an unexpired token reports (`elif` vs falling through)."""
+    token_path = tmp_path / "token.json"
+    token_path.write_text(
+        '{"token": "at", "refresh_token": "r", "client_id": "c", "client_secret": "s", '
+        '"token_uri": "https://oauth2.googleapis.com/token", '
+        '"expiry": "1970-01-01T00:00:00Z", "scopes": []}')
+    out = auth_tools._auth_status_payload(str(token_path), [])
+    assert out["status"] == "ready"
+    assert "refreshed automatically" in out["detail"]
+
+
+def test_auth_status_reports_plain_ready_with_no_expiry_caveat_when_not_expired(tmp_path):
+    """The third case, distinct from both expired variants above: a credential with a real,
+    future `expiry` is not expired at all, so NEITHER the no-refresh-token detail NOR the
+    will-refresh-automatically detail applies - the function must fall through the whole
+    if/elif untouched to the plain `detail` set at the top."""
+    token_path = tmp_path / "token.json"
+    token_path.write_text(
+        '{"token": "at", "refresh_token": "r", "client_id": "c", "client_secret": "s", '
+        '"token_uri": "https://oauth2.googleapis.com/token", '
+        '"expiry": "2999-01-01T00:00:00Z", "scopes": []}')
+    out = auth_tools._auth_status_payload(str(token_path), [])
+    assert out["status"] == "ready"
+    assert "expired" not in out["detail"]
 
 
 def test_logout_removes_a_corrupt_token_file_without_raising(tmp_path):

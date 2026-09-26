@@ -38,7 +38,11 @@ from typing import Any
 if sys.version_info >= (3, 12):
     from typing import TypedDict
 else:
-    from typing_extensions import TypedDict
+    # Only ever runs under Python <3.12 - this repo's CI matrix covers it on the 3.10/3.11
+    # legs (ci.yml), each of which measures coverage independently, so on THIS interpreter
+    # (>=3.12, per the branch above) it is structurally unreachable rather than merely untested:
+    # no monkeypatch of sys.version_info would re-run the module-level import it already ran.
+    from typing_extensions import TypedDict  # pragma: no cover
 
 from ...mail import AttachmentRef, ParsedMessage
 

@@ -30,10 +30,13 @@ prompt-injection checks). The second is roughly half the product — see §9 of 
   `describe_configuration` is the one tool that must say what is hidden and why, since an absent
   tool otherwise reads as "unsupported" to a model with no way to check.
 - **Every offline test runs against `FakeBackend`** (`backend.py`) - real Google calls and the
-  interactive OAuth flow are the gated live suite (task 14), not this suite. `fail_under = 90`
-  in `pyproject.toml` is a real gate; `_auth_flow.py`/`_login.py`'s interactive paths are marked
-  `# pragma: no cover` rather than used to justify lowering it - see those files for what covers
-  them instead.
+  interactive OAuth flow are the gated live suite (task 14), not this suite. `fail_under = 100`
+  in `pyproject.toml` is a real gate; a gap below 100 is either a real test or a `# pragma: no
+  cover` on the specific line, with a reason there - never a lowered number. `_auth_flow.py`/
+  `_login.py`'s interactive paths, the `Backend` Protocol's stub bodies (`backend.py`), the
+  `python -m` entry point (`mcp/__main__.py`, exercised via `runpy` instead), and the Windows
+  `icacls` hardening path in `auth.py` (exercised with `_WINDOWS` forced and `_icacls` stubbed,
+  not skipped) are the documented exceptions - see those files for what covers them instead.
 - **`ruff check .` and `mypy` must both pass** before a PR; CI (`.github/workflows/ci.yml`) runs
   both plus `pytest --cov` on Python 3.10-3.14.
 - **The README's tool table is generated**, the same convention this repo already used for the

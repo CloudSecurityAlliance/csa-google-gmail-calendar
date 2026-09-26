@@ -77,6 +77,15 @@ def test_create_event_treats_a_bare_date_as_an_all_day_event():
     assert out["end"] == {"date": "2026-10-02"}
 
 
+def test_create_event_passes_through_an_optional_description_and_location():
+    fake = FakeBackend()
+    s = create_server(backend=fake, policy=policy.Policy())
+    out = _call(s, "create_event", summary="Offsite", start="2026-10-01T09:00:00Z",
+               end="2026-10-01T10:00:00Z", description="Bring laptops", location="HQ")
+    assert out["description"] == "Bring laptops"
+    assert out["location"] == "HQ"
+
+
 def test_reschedule_event_moves_only_the_time_and_notifies_by_default():
     """Named `reschedule_event`, not `update_event` (fix round 1, CINO 2026-09-26) - the tool
     moves an event's time only, and the name must not claim more than that."""
@@ -158,6 +167,23 @@ def test_delete_event_is_annotated_destructive():
     assert s._tool_manager.get_tool("delete_event").annotations.destructive_hint is True
 
 
+def test_delete_event_delegates_to_the_backend_and_notifies_by_default():
+    seen = {}
+
+    class Spy(FakeBackend):
+        def delete_event(self, **kw):
+            seen.update(kw)
+            return super().delete_event(**kw)
+
+    fake = Spy(events={"e1": {"id": "e1", "calendarId": "primary", "summary": "Standup"}})
+    p = policy.Policy(frozenset(policy.ALL_CAPABILITIES))
+    s = create_server(backend=fake, policy=p)
+    _call(s, "delete_event", event_id="e1")
+    assert seen["calendar_id"] == "primary"
+    assert seen["event_id"] == "e1"
+    assert seen["send_updates"] == "all"
+
+
 def test_find_free_time_returns_gaps_not_busy_blocks():
     """A model asked 'when are we free' should not have to invert the answer itself."""
     fake = FakeBackend(freebusy={"primary": [
@@ -230,6 +256,19 @@ def test_list_events_is_an_overlap_filter_not_a_starts_in_window_filter():
     s = create_server(backend=fake, policy=policy.Policy())
     out = _call(s, "list_events", calendar_id="primary",
                time_min="2026-10-01T09:00:00Z", time_max="2026-10-01T10:00:00Z")
+    assert [e["id"] for e in out["events"]] == ["e1"]
+
+
+def test_list_events_query_filters_by_summary_or_description():
+    fake = FakeBackend(events={
+        "e1": {"id": "e1", "calendarId": "primary", "summary": "Budget review",
+              "start": {"dateTime": "2026-10-01T09:00:00Z"},
+              "end": {"dateTime": "2026-10-01T09:30:00Z"}},
+        "e2": {"id": "e2", "calendarId": "primary", "summary": "Lunch",
+              "start": {"dateTime": "2026-10-01T12:00:00Z"},
+              "end": {"dateTime": "2026-10-01T13:00:00Z"}}})
+    s = create_server(backend=fake, policy=policy.Policy())
+    out = _call(s, "list_events", calendar_id="primary", query="budget")
     assert [e["id"] for e in out["events"]] == ["e1"]
 
 

@@ -140,8 +140,15 @@ source = ["csa_google_gmail_calendar"]
 branch = true
 
 [tool.coverage.report]
-# Unit suite runs offline against fakes; real-Google calls and the interactive OAuth flow
-# are exercised by the gated integration suite, not here - hence a threshold below 100.
-# Set higher than csa-google-workspace's 85: this project targets 90 from the outset.
 exclude_lines = ["pragma: no cover", "raise NotImplementedError", "if TYPE_CHECKING:"]
-fail_under = 90
+# `Backend` (backend.py) is a Protocol: every method is a signature ending in a bare
+# `...` body - there is no code there to execute, so a stub def line reports as a
+# partially-covered branch (the "call this method" arc never taken) even though the
+# class is fully exercised through FakeBackend/ApiBackend. Matches a statement whose
+# source ends in `: ...`, which is the stub-body shape and nothing else in this codebase.
+exclude_also = [":\\s*\\.\\.\\.\\s*$"]
+# 100, not a measured-minus-slack number: a gate below what coverage actually measures
+# cannot fail. csa-zendesk carries the same reasoning for the same 100. The one
+# sanctioned hatch below 100 is `# pragma: no cover` on a specific line, with a comment
+# there saying why - never lowering this number back down.
+fail_under = 100

@@ -24,6 +24,18 @@ def test_every_backend_method_has_a_gate():
     assert methods <= set(policy._GATES), f"ungated: {sorted(methods - set(policy._GATES))}"
 
 
+def test_policy_construction_refuses_an_unknown_capability():
+    with pytest.raises(ValueError, match="unknown capability"):
+        policy.Policy(frozenset({"not_a_real_capability"}))
+
+
+def test_allows_is_false_for_a_method_with_no_gate():
+    """Fail closed: an ungated method is one nobody decided about, so `allows` must say no
+    rather than defaulting to yes."""
+    p = policy.Policy()
+    assert p.allows("not_a_real_backend_method") is False
+
+
 def test_require_refuses_a_disabled_capability_by_name():
     p = policy.Policy(frozenset({policy.MAIL_READ}))
     with pytest.raises(PolicyError, match="mail.send"):
@@ -107,6 +119,15 @@ def test_policy_backend_getattr_fails_closed_for_an_ungated_method():
     pb = policy.PolicyBackend(Spy(), policy.Policy())
     with pytest.raises(PolicyError):
         pb.not_a_real_backend_method()
+
+
+def test_policy_backend_getattr_refuses_a_private_name_not_set_by_init():
+    """`__getattr__` only runs once normal attribute lookup has already failed, so this reaches
+    a name that is neither `_inner`/`_policy` (set by `__init__`) nor a dunder - the case the
+    leading-underscore check exists to refuse, rather than forwarding it to `_inner`."""
+    pb = policy.PolicyBackend(object(), policy.Policy())
+    with pytest.raises(AttributeError, match="_not_a_real_attribute"):
+        getattr(pb, "_not_a_real_attribute")  # noqa: B009 - attribute access itself is what raises
 
 
 def test_policy_backend_inner_is_reachable_and_unpoliced():

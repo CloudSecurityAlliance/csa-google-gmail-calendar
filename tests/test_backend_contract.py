@@ -48,6 +48,19 @@ def test_unknown_id_raises_notfound_not_keyerror():
         FakeBackend().get_message(message_id="nope")
 
 
+def test_get_calendar_returns_the_seeded_calendar():
+    fake = FakeBackend(calendars={"primary": {"id": "primary", "summary": "me@example.com"}})
+    assert fake.get_calendar(calendar_id="primary")["summary"] == "me@example.com"
+
+
+def test_get_calendar_for_an_unknown_id_raises_notfound():
+    """Not wired to any MCP tool (there is no `get_calendar` tool - only `list_calendars`/
+    `get_event`/`find_free_time` reach a calendar), so this Backend method is exercised
+    directly, at the seam, the same way this whole file tests `FakeBackend`."""
+    with pytest.raises(NotFoundError, match="nope"):
+        FakeBackend().get_calendar(calendar_id="nope")
+
+
 def test_archive_removes_inbox_and_nothing_else():
     fake = FakeBackend(messages={"m1": {"id": "m1", "labelIds": ["INBOX", "UNREAD", "IMPORTANT"]}})
     fake.archive_message(message_id="m1")

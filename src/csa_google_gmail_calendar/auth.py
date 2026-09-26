@@ -727,7 +727,18 @@ def load_cached_credentials(token_path: str, required: list[str]) -> Credentials
     # `_read_cached` raises `ScopesMissingError` (naming the scopes) rather than returning
     # None for a scope-short token, so a None here means only "nothing loadable".
     creds = _read_cached(token_path, required, explain_missing_scopes=True)
-    if creds is None:
+    if creds is None:  # pragma: no cover - see docstring below this line
+        # Unreachable given `_read_cached`'s CURRENT body: with `explain_missing_scopes=True`
+        # it either raises (missing scopes, absent path - and the path was just checked above)
+        # or returns real `Credentials`, never `None`. Kept, not deleted, because `_read_cached`
+        # is declared to return `Credentials | None` regardless of that flag - mypy cannot see
+        # the flag-dependent narrowing, so removing this guard would need `creds.valid` below to
+        # run against a value typed `Credentials | None` with nothing to prove it is not `None`.
+        # A future change to `_read_cached` that reintroduces a bare `None` under this flag
+        # would silently resurrect the exact "no token is indistinguishable from one scope
+        # short" bug `ScopesMissingError` exists to prevent - this is the guard against that,
+        # not a path this test suite can reach honestly (forcing it would mean mocking
+        # `_read_cached` itself, which tests the mock, not this function).
         raise AuthError("no usable cached credentials")
     if creds.valid:
         return creds

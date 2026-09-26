@@ -159,6 +159,25 @@ def test_create_all_day_event_uses_date_not_datetime():
     assert out["start"] == {"date": "2026-10-01"}
 
 
+def test_create_with_an_unparseable_all_day_date_raises_a_named_valueerror():
+    """`_event_boundary`'s "date" branch re-raises `datetime.fromisoformat`'s failure naming
+    both the bad value and where it came from - a malformed all-day date is a different failure
+    shape from a missing field entirely, and must not be swallowed into a generic error."""
+    body = {"start": {"date": "not-a-date"}, "end": {"dateTime": "2026-10-01T09:30:00Z"}}
+    with pytest.raises(ValueError, match="not a valid RFC3339 date"):
+        Calendar(FakeBackend()).create(calendar_id="primary", body=body)
+
+
+def test_create_boundary_with_neither_datetime_nor_date_raises_valueerror():
+    """A `start`/`end` node that is present (so the earlier `not start or not end` check does
+    not fire) but carries neither `dateTime` nor `date` is malformed in a different way, and
+    `_event_boundary` reports it as `None` rather than raising - `create` must still refuse it,
+    naming the same remedy as the missing-field case."""
+    body = {"start": {"timeZone": "UTC"}, "end": {"dateTime": "2026-10-01T09:30:00Z"}}
+    with pytest.raises(ValueError, match="dateTime.*date"):
+        Calendar(FakeBackend()).create(calendar_id="primary", body=body)
+
+
 def test_create_all_day_event_inverted_still_raises():
     body = {"start": {"date": "2026-10-03"}, "end": {"date": "2026-10-01"}}
     with pytest.raises(ValueError, match="before start"):
@@ -271,6 +290,16 @@ def test_reschedule_end_before_start_raises_valueerror():
                                   end={"dateTime": "2026-10-02T09:00:00Z"})
 
 
+def test_reschedule_boundary_with_neither_datetime_nor_date_raises_valueerror():
+    fake = FakeBackend(events={"e1": {"id": "e1", "etag": '"v1"',
+                                      "start": {"dateTime": "2026-10-01T09:00:00Z"},
+                                      "end": {"dateTime": "2026-10-01T09:30:00Z"}}})
+    with pytest.raises(ValueError, match="dateTime.*date"):
+        Calendar(fake).reschedule(calendar_id="primary", event_id="e1",
+                                  start={"timeZone": "UTC"},
+                                  end={"dateTime": "2026-10-02T09:30:00Z"})
+
+
 def test_reschedule_missing_event_raises_notfound():
     with pytest.raises(NotFoundError):
         Calendar(FakeBackend()).reschedule(calendar_id="primary", event_id="nope",
@@ -339,6 +368,24 @@ def test_find_free_adjacent_busy_blocks_produce_no_zero_length_gap():
     out = Calendar(fake).find_free(time_min="2026-10-01T09:00:00Z", time_max="2026-10-01T11:00:00Z",
                                    calendar_ids=["primary"])
     assert out["free"] == []
+
+
+def test_find_free_drops_a_zero_length_busy_block_inside_the_window():
+    """A zero-duration busy block (Google accepts these — `test_create_zero_length_event_is_
+    allowed` above) sits strictly inside the window, so it passes the overlap test that put it
+    in `busy` at all, but clips to `start == end` and consumes no time - it must be dropped
+    rather than merged in as a zero-length gap-eater. A second, ordinary busy block follows it
+    in the same calendar, so the loop must both drop the first and keep iterating to pick up
+    the second, rather than merely falling out of the loop after the dropped entry."""
+    fake = FakeBackend(freebusy={"primary": [
+        {"start": "2026-10-01T12:00:00Z", "end": "2026-10-01T12:00:00Z"},
+        {"start": "2026-10-01T13:00:00Z", "end": "2026-10-01T14:00:00Z"}]})
+    out = Calendar(fake).find_free(time_min="2026-10-01T09:00:00Z", time_max="2026-10-01T17:00:00Z",
+                                   calendar_ids=["primary"])
+    assert out["free"] == [
+        {"start": "2026-10-01T09:00:00Z", "end": "2026-10-01T13:00:00Z"},
+        {"start": "2026-10-01T14:00:00Z", "end": "2026-10-01T17:00:00Z"},
+    ]
 
 
 def test_find_free_clips_a_busy_block_extending_beyond_the_window():

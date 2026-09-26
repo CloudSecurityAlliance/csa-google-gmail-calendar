@@ -282,6 +282,20 @@ def test_an_absent_token_is_a_plain_auth_error_not_a_scope_error(tmp_path):
     assert not isinstance(ei.value, auth.ScopesMissingError)
 
 
+def test_a_valid_unexpired_cached_token_is_returned_without_refreshing(tmp_path):
+    """The plain happy path: a token with a real, future `expiry` is not expired at all, so
+    `load_cached_credentials` must return it directly - neither raising nor refreshing."""
+    import json
+    tok = tmp_path / "token.json"
+    tok.write_text(json.dumps({"token": "x", "refresh_token": "y", "client_id": "c",
+                               "client_secret": "s", "token_uri": "https://oauth2.googleapis.com/token",
+                               "expiry": "2999-01-01T00:00:00Z",
+                               "scopes": [f"{B}gmail.readonly"]}))
+    result = auth.load_cached_credentials(str(tok), [f"{B}gmail.readonly"])
+    assert result.valid is True
+    assert result.token == "x"
+
+
 def test_a_corrupt_token_file_does_not_echo_its_contents(tmp_path):
     """Never interpolate the cause — it may carry token material."""
     tok = tmp_path / "token.json"
@@ -451,7 +465,32 @@ def test_insufficient_scopes_forces_reconsent_on_the_interactive_path(tmp_path, 
     assert auth.load_credentials(_client_secrets(tmp_path), str(token), _required()) is fresh
 
 
+def test_load_credentials_refreshes_an_expired_cached_token_without_running_the_flow(
+        tmp_path, monkeypatch):
+    """`load_credentials` has its own expired-and-refreshable branch, separate from
+    `load_cached_credentials`'s - it must refresh in place and persist the result rather than
+    falling through to the interactive browser flow."""
+    token = tmp_path / "token.json"
+    token.write_text("{}")
+    cached = FakeCreds(valid=False, expired=True, refresh_token="rt")
+    _patch_from_file(monkeypatch, cached)
+    monkeypatch.setattr(auth, "Request", lambda: None)
+    monkeypatch.setattr(auth.InstalledAppFlow, "from_client_config", _no_flow)
+
+    result = auth.load_credentials(_client_secrets(tmp_path), str(token), _required())
+
+    assert result is cached and cached.refreshed is True
+    assert token.read_text() == '{"token": "fake"}'          # refreshed token persisted
+
+
 # --- token-file hardening -------------------------------------------------------------------
+
+def test_file_is_owner_only_is_none_for_a_path_that_does_not_exist(tmp_path):
+    """Unknown, not False - a missing file is not "readable by others", and reporting it as
+    such would tighten permissions on nothing. Platform-independent: this is the check before
+    the POSIX/Windows branch, common to both."""
+    assert auth.file_is_owner_only(str(tmp_path / "no-such-file.json")) is None
+
 
 def test_written_token_and_dir_are_owner_only(tmp_path, monkeypatch):
     token = tmp_path / "creds" / "token.json"   # dir is created by load_credentials
@@ -529,6 +568,23 @@ def test_a_failed_write_leaves_the_previous_token_file_untouched(tmp_path):
     assert leftovers == []                                 # temp file cleaned up on failure
 
 
+def test_a_failed_write_whose_cleanup_also_fails_still_raises_the_original_error(
+        tmp_path, monkeypatch):
+    """The cleanup `os.remove(tmp_path)` inside the `except BaseException` handler can itself
+    fail (the temp file already gone, a permission error) - that must not mask or replace the
+    ORIGINAL failure that triggered cleanup in the first place; it is swallowed
+    (`except OSError: pass`), and the write's own exception still propagates."""
+    token = tmp_path / "token.json"
+    token.write_text("old-good-token")
+    monkeypatch.setattr(auth.os, "remove",
+                        lambda path: (_ for _ in ()).throw(OSError("temp file already gone")))
+
+    with pytest.raises(RuntimeError, match="boom mid-write"):
+        auth._write_token(str(token), _ExplodingCreds())
+
+    assert token.read_text() == "old-good-token"          # still untouched
+
+
 def test_symlinked_token_path_is_refused(tmp_path):
     link = tmp_path / "token.json"
     try:
@@ -583,6 +639,17 @@ def test_client_secrets_that_is_not_json_names_the_path(tmp_path):
     bad.write_text("{not json")
     with pytest.raises(AuthError, match=str(bad)):
         auth.read_client_secrets(str(bad))
+
+
+def test_client_secrets_unreadable_for_a_reason_other_than_missing_names_the_path(tmp_path):
+    """`FileNotFoundError` gets its own message (tested above); every other `OSError` - a
+    directory where a file was expected, a permission error - is a different failure and gets
+    a different message, but must still be an `AuthError` naming the path, not a bare OSError
+    escaping from inside this function."""
+    a_directory = tmp_path / "client_secret.json"
+    a_directory.mkdir()          # open() on a directory raises IsADirectoryError, an OSError
+    with pytest.raises(AuthError, match=f"Could not read.*{a_directory}"):
+        auth.read_client_secrets(str(a_directory))
 
 
 def test_client_secrets_missing_installed_or_web_key_is_refused(tmp_path):

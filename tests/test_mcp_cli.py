@@ -4,6 +4,8 @@ what a unit test must not do (see `_login.py`/`_auth_flow.py`'s own docstrings o
 code only runs from a real terminal)."""
 import threading
 
+import pytest
+
 from csa_google_gmail_calendar import __version__
 from csa_google_gmail_calendar.mcp import cli
 
@@ -109,3 +111,34 @@ def test_lazy_api_backend_builds_one_instance_per_thread(monkeypatch):
     t.join()
 
     assert other_thread_result["instance"] is not same_thread_first
+
+
+def test_lazy_api_backend_getattr_refuses_a_private_name(monkeypatch):
+    class _StubSettings:
+        token_path = "/dev/null"
+        required_scopes: list[str] = []
+
+    lazy = cli._LazyApiBackend(settings=_StubSettings())  # type: ignore[arg-type]
+    with pytest.raises(AttributeError, match="_not_a_real_attribute"):
+        getattr(lazy, "_not_a_real_attribute")  # noqa: B009 - attribute access itself is what raises
+
+
+def test_lazy_api_backend_getattr_forwards_to_the_resolved_backend(monkeypatch):
+    """Satisfies the `Backend` Protocol structurally, the same way `policy.PolicyBackend`
+    does - an ordinary (non-underscore) attribute access resolves the real, thread-local
+    backend and forwards to it."""
+    class _FakeBackend:
+        def get_profile(self):
+            return {"emailAddress": "a@example.com"}
+
+    monkeypatch.setattr("csa_google_gmail_calendar.auth.load_cached_credentials",
+                        lambda token_path, required: object())
+    monkeypatch.setattr("csa_google_gmail_calendar.backend.ApiBackend.from_credentials",
+                        classmethod(lambda cls, creds: _FakeBackend()))
+
+    class _StubSettings:
+        token_path = "/dev/null"
+        required_scopes: list[str] = []
+
+    lazy = cli._LazyApiBackend(settings=_StubSettings())  # type: ignore[arg-type]
+    assert lazy.get_profile() == {"emailAddress": "a@example.com"}

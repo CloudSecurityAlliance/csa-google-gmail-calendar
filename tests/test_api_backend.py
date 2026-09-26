@@ -410,3 +410,257 @@ def test_list_drafts_passes_through_page_token_and_maxresults():
     _, kwargs, _ = rec[0]
     assert kwargs["maxResults"] == 10
     assert kwargs["pageToken"] == "tok3"
+
+
+def test_list_drafts_omits_page_token_when_none_is_given():
+    rec = []
+    ApiBackend(_Chain(rec), _Chain([])).list_drafts(limit=10)
+    _, kwargs, _ = rec[0]
+    assert "pageToken" not in kwargs
+
+
+# --- from_credentials: the real construction path ----------------------------------------
+
+def test_from_credentials_builds_both_discovery_services(monkeypatch):
+    from csa_google_gmail_calendar import backend as backend_mod
+
+    calls = []
+
+    def fake_build(service_name, version, credentials=None):
+        calls.append((service_name, version, credentials))
+        return f"{service_name}-{version}-service"
+
+    monkeypatch.setattr(backend_mod.discovery, "build", fake_build)
+    creds = object()
+    ab = ApiBackend.from_credentials(creds)
+    assert calls == [("gmail", "v1", creds), ("calendar", "v3", creds)]
+    assert ab._gmail == "gmail-v1-service"
+    assert ab._cal == "calendar-v3-service"
+
+
+# --- mail reads not yet exercised at this seam --------------------------------------------
+
+def test_get_thread_passes_the_thread_id_and_format():
+    rec = []
+    seeded = {"id": "t1", "messages": []}
+    ApiBackend(_Chain(rec, results={"users.threads.get": seeded}), _Chain([])).get_thread(
+        thread_id="t1")
+    name, kwargs, _ = rec[0]
+    assert name == "users.threads.get"
+    assert kwargs["id"] == "t1" and kwargs["format"] == "full"
+
+
+def test_list_threads_passes_through_a_query():
+    rec = []
+    ApiBackend(_Chain(rec), _Chain([])).list_threads(query="from:a@example.com")
+    _, kwargs, _ = rec[0]
+    assert kwargs["q"] == "from:a@example.com"
+
+
+def test_list_threads_omits_page_token_when_none_is_given():
+    rec = []
+    ApiBackend(_Chain(rec), _Chain([])).list_threads()
+    _, kwargs, _ = rec[0]
+    assert "pageToken" not in kwargs
+
+
+def test_get_attachment_passes_message_and_attachment_ids():
+    rec = []
+    ApiBackend(_Chain(rec), _Chain([])).get_attachment(message_id="m1", attachment_id="att-1")
+    name, kwargs, _ = rec[0]
+    assert name == "users.messages.attachments.get"
+    assert kwargs["messageId"] == "m1" and kwargs["id"] == "att-1"
+
+
+def test_list_labels_returns_the_labels_list():
+    seeded = {"labels": [{"id": "INBOX", "name": "INBOX"}]}
+    rec = []
+    result = ApiBackend(_Chain(rec, results={"users.labels.list": seeded}),
+                        _Chain([])).list_labels()
+    assert result == seeded["labels"]
+
+
+def test_get_draft_passes_the_draft_id():
+    rec = []
+    ApiBackend(_Chain(rec), _Chain([])).get_draft(draft_id="d1")
+    name, kwargs, _ = rec[0]
+    assert name == "users.drafts.get" and kwargs["id"] == "d1"
+
+
+def test_list_history_passes_the_start_history_id():
+    rec = []
+    ApiBackend(_Chain(rec), _Chain([])).list_history(start_history_id="123")
+    name, kwargs, _ = rec[0]
+    assert name == "users.history.list" and kwargs["startHistoryId"] == "123"
+
+
+# --- mail reversible writes not yet exercised at this seam --------------------------------
+
+def test_create_draft_under_the_threshold_sends_the_raw_message():
+    rec = []
+    ApiBackend(_Chain(rec), _Chain([])).create_draft(raw="c2hvcnQ=")
+    name, kwargs, _ = rec[0]
+    assert name == "users.drafts.create"
+    assert kwargs["body"] == {"message": {"raw": "c2hvcnQ="}}
+
+
+def test_create_draft_over_the_threshold_raises_apierror():
+    oversized_raw = "A" * (SIMPLE_UPLOAD_LIMIT + 1)
+    with pytest.raises(ApiError, match="resumable"):
+        ApiBackend(_Chain([]), _Chain([])).create_draft(raw=oversized_raw)
+
+
+def test_update_draft_under_the_threshold_sends_the_raw_message():
+    rec = []
+    ApiBackend(_Chain(rec), _Chain([])).update_draft(draft_id="d1", raw="c2hvcnQ=")
+    name, kwargs, _ = rec[0]
+    assert name == "users.drafts.update"
+    assert kwargs["id"] == "d1" and kwargs["body"] == {"message": {"raw": "c2hvcnQ="}}
+
+
+def test_update_draft_over_the_threshold_raises_apierror():
+    oversized_raw = "A" * (SIMPLE_UPLOAD_LIMIT + 1)
+    with pytest.raises(ApiError, match="resumable"):
+        ApiBackend(_Chain([]), _Chain([])).update_draft(draft_id="d1", raw=oversized_raw)
+
+
+def test_delete_draft_passes_the_draft_id():
+    rec = []
+    ApiBackend(_Chain(rec), _Chain([])).delete_draft(draft_id="d1")
+    name, kwargs, _ = rec[0]
+    assert name == "users.drafts.delete" and kwargs["id"] == "d1"
+
+
+def test_mark_unread_adds_the_unread_label_only():
+    """The one modify_message_labels caller in this class that supplies `add` without
+    `remove` - `archive_message`/`mark_read` are remove-only."""
+    rec = []
+    ApiBackend(_Chain(rec), _Chain([])).mark_unread(message_id="m1")
+    _, kwargs, _ = rec[0]
+    assert kwargs["body"] == {"addLabelIds": ["UNREAD"]}
+
+
+def test_modify_thread_labels_sends_both_add_and_remove():
+    rec = []
+    ApiBackend(_Chain(rec), _Chain([])).modify_thread_labels(
+        thread_id="t1", add=["STARRED"], remove=["UNREAD"])
+    name, kwargs, _ = rec[0]
+    assert name == "users.threads.modify"
+    assert kwargs["body"] == {"addLabelIds": ["STARRED"], "removeLabelIds": ["UNREAD"]}
+
+
+def test_modify_thread_labels_sends_add_only_when_no_remove_is_given():
+    rec = []
+    ApiBackend(_Chain(rec), _Chain([])).modify_thread_labels(thread_id="t1", add=["STARRED"])
+    _, kwargs, _ = rec[0]
+    assert kwargs["body"] == {"addLabelIds": ["STARRED"]}
+
+
+def test_archive_thread_removes_inbox_on_the_thread():
+    rec = []
+    ApiBackend(_Chain(rec), _Chain([])).archive_thread(thread_id="t1")
+    _, kwargs, _ = rec[0]
+    assert kwargs["body"] == {"removeLabelIds": ["INBOX"]}
+
+
+def test_trash_message_passes_the_message_id():
+    rec = []
+    ApiBackend(_Chain(rec), _Chain([])).trash_message(message_id="m1")
+    name, kwargs, _ = rec[0]
+    assert name == "users.messages.trash" and kwargs["id"] == "m1"
+
+
+def test_trash_thread_passes_the_thread_id():
+    rec = []
+    ApiBackend(_Chain(rec), _Chain([])).trash_thread(thread_id="t1")
+    name, kwargs, _ = rec[0]
+    assert name == "users.threads.trash" and kwargs["id"] == "t1"
+
+
+def test_untrash_message_passes_the_message_id():
+    rec = []
+    ApiBackend(_Chain(rec), _Chain([])).untrash_message(message_id="m1")
+    name, kwargs, _ = rec[0]
+    assert name == "users.messages.untrash" and kwargs["id"] == "m1"
+
+
+def test_untrash_thread_passes_the_thread_id():
+    rec = []
+    ApiBackend(_Chain(rec), _Chain([])).untrash_thread(thread_id="t1")
+    name, kwargs, _ = rec[0]
+    assert name == "users.threads.untrash" and kwargs["id"] == "t1"
+
+
+def test_create_label_passes_the_name():
+    rec = []
+    ApiBackend(_Chain(rec), _Chain([])).create_label(name="Work")
+    name, kwargs, _ = rec[0]
+    assert name == "users.labels.create" and kwargs["body"] == {"name": "Work"}
+
+
+# --- mail outbound not yet exercised at this seam ------------------------------------------
+
+def test_send_draft_passes_the_draft_id_as_the_body():
+    rec = []
+    ApiBackend(_Chain(rec), _Chain([])).send_draft(draft_id="d1")
+    name, kwargs, _ = rec[0]
+    assert name == "users.drafts.send" and kwargs["body"] == {"id": "d1"}
+
+
+def test_reply_message_sends_with_the_thread_id():
+    rec = []
+    ApiBackend(_Chain(rec), _Chain([])).reply_message(raw="c2hvcnQ=", thread_id="t1")
+    _, kwargs, _ = rec[0]
+    assert kwargs["body"] == {"raw": "c2hvcnQ=", "threadId": "t1"}
+
+
+def test_reply_all_message_sends_with_the_thread_id():
+    rec = []
+    ApiBackend(_Chain(rec), _Chain([])).reply_all_message(raw="c2hvcnQ=", thread_id="t1")
+    _, kwargs, _ = rec[0]
+    assert kwargs["body"] == {"raw": "c2hvcnQ=", "threadId": "t1"}
+
+
+def test_forward_message_sends_with_no_thread_id():
+    rec = []
+    ApiBackend(_Chain(rec), _Chain([])).forward_message(raw="c2hvcnQ=")
+    _, kwargs, _ = rec[0]
+    assert kwargs["body"] == {"raw": "c2hvcnQ="}
+
+
+# --- calendar not yet exercised at this seam ------------------------------------------------
+
+def test_get_calendar_passes_the_calendar_id():
+    rec = []
+    ApiBackend(_Chain([]), _Chain(rec)).get_calendar(calendar_id="primary")
+    name, kwargs, _ = rec[0]
+    assert name == "calendars.get" and kwargs["calendarId"] == "primary"
+
+
+def test_list_events_passes_through_a_query():
+    rec = []
+    ApiBackend(_Chain([]), _Chain(rec)).list_events(calendar_id="primary", query="budget")
+    _, kwargs, _ = rec[0]
+    assert kwargs["q"] == "budget"
+
+
+def test_query_freebusy_sends_the_time_bounds_and_calendar_ids():
+    rec = []
+    ApiBackend(_Chain([]), _Chain(rec)).query_freebusy(
+        time_min="2026-10-01T09:00:00Z", time_max="2026-10-01T17:00:00Z",
+        calendar_ids=["primary", "team@example.com"])
+    name, kwargs, _ = rec[0]
+    assert name == "freebusy.query"
+    assert kwargs["body"] == {
+        "timeMin": "2026-10-01T09:00:00Z", "timeMax": "2026-10-01T17:00:00Z",
+        "items": [{"id": "primary"}, {"id": "team@example.com"}],
+    }
+
+
+def test_delete_event_passes_calendar_event_and_send_updates():
+    rec = []
+    ApiBackend(_Chain([]), _Chain(rec)).delete_event(
+        calendar_id="primary", event_id="e1", send_updates="none")
+    name, kwargs, _ = rec[0]
+    assert name == "events.delete"
+    assert kwargs == {"calendarId": "primary", "eventId": "e1", "sendUpdates": "none"}
