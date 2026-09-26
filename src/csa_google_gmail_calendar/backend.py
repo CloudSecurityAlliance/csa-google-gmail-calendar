@@ -93,32 +93,58 @@ def _add_labels(label_ids: list[str], add: list[str] | None) -> None:
             label_ids.append(label)
 
 
-def _parse_rfc3339(value: str) -> datetime:
+def _parse_rfc3339(value: str, *, context: str = "") -> datetime:
     """RFC3339 to an aware datetime. Google's offset is mandatory, so a naive string
     comparison orders 09:00-07:00 below 15:00Z when it is in fact later (Fix round 1,
     CINO 2026-09-25 - demonstrated against `list_events`/`query_freebusy`).
 
     `datetime.fromisoformat` did not accept a trailing `Z` until 3.11 and our floor is 3.10,
     which is why the replacement below exists rather than relying on the parser alone.
+
+    Deliberately not caught and swallowed (Fix round 2, CINO 2026-09-25): a malformed
+    timestamp raising loudly beats the fake silently mis-filtering a bad fixture, which is
+    exactly the lesson of the naive-string-comparison bug this method exists to fix. What Fix
+    round 2 changes is only the *message* - `datetime.fromisoformat`'s own error says
+    "Invalid isoformat string" and names neither the value nor where it came from, which is
+    useless to a test author staring at twenty fixtures. `context` (an event id, a freebusy
+    interval, or a bare query bound) is threaded in by every caller so the re-raised
+    `ValueError` names both.
     """
-    return datetime.fromisoformat(value.replace("Z", "+00:00") if value.endswith("Z") else value)
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00") if value.endswith("Z") else value)
+    except ValueError as exc:
+        where = f" ({context})" if context else ""
+        raise ValueError(f"not a valid RFC3339 timestamp: {value!r}{where}") from exc
 
 
-def _event_boundary(node: dict[str, Any] | None) -> datetime | None:
+def _event_boundary(node: dict[str, Any] | None, *, context: str = "") -> datetime | None:
     """An event's start or end as an aware datetime, or None if the node carries neither
     `dateTime` nor `date` (a malformed event, which is let through rather than crashing the
     whole listing over one bad fixture).
 
-    All-day events carry `{"date": "2026-10-01"}` rather than a `dateTime`. Google's own
-    convention already makes an all-day event's `end.date` the day AFTER its last day, so
-    treating a bare date as UTC midnight needs no extra adjustment - it lines up with a timed
-    event's boundary without this fake having to re-derive the exclusive-end convention itself.
+    All-day events carry `{"date": "2026-10-01"}` rather than a `dateTime`. Convention chosen
+    (Fix round 1, CINO 2026-09-25): interpret the bare date as UTC midnight. Google's own
+    all-day convention already makes an all-day event's `end.date` the day AFTER its last day,
+    so a UTC-midnight boundary lines up with a timed event's boundary in the same overlap test
+    without this fake re-deriving that exclusive-end convention itself. UTC rather than the
+    calendar's own timezone is acceptable here specifically because this is a double: nothing
+    in the ten seed stores carries a calendar's timezone, so there is no timezone to be correct
+    *about* - picking one that isn't UTC would need a field this fake does not have anywhere
+    else, for a distinction (which hour of a day-boundary edge case an all-day event resolves
+    to) no test in this plan depends on.
+
+    `context` is threaded through to `_parse_rfc3339` unchanged (Fix round 2) so a malformed
+    `dateTime` or `date` names the event it came from, not just the bad string.
     """
     node = node or {}
     if "dateTime" in node:
-        return _parse_rfc3339(node["dateTime"])
+        return _parse_rfc3339(node["dateTime"], context=context)
     if "date" in node:
-        return datetime.fromisoformat(node["date"]).replace(tzinfo=timezone.utc)
+        try:
+            return datetime.fromisoformat(node["date"]).replace(tzinfo=timezone.utc)
+        except ValueError as exc:
+            where = f" ({context})" if context else ""
+            raise ValueError(f"not a valid RFC3339 date: {node['date']!r}{where}") from exc
     return None
 
 
@@ -413,13 +439,22 @@ class FakeBackend:
         # exactly the case Task 12's find_free_time needs right, since a meeting already under
         # way must not be offered back as a free slot.
         if time_min:
-            lower = _parse_rfc3339(time_min)
-            matches = [e for e in matches
-                      if (end := _event_boundary(e.get("end"))) is None or end > lower]
+            lower = _parse_rfc3339(time_min, context="time_min")
+            kept = []
+            for e in matches:
+                end = _event_boundary(e.get("end"), context=f"event {e.get('id', '?')!r} end")
+                if end is None or end > lower:
+                    kept.append(e)
+            matches = kept
         if time_max:
-            upper = _parse_rfc3339(time_max)
-            matches = [e for e in matches
-                      if (start := _event_boundary(e.get("start"))) is None or start < upper]
+            upper = _parse_rfc3339(time_max, context="time_max")
+            kept = []
+            for e in matches:
+                start = _event_boundary(e.get("start"),
+                                        context=f"event {e.get('id', '?')!r} start")
+                if start is None or start < upper:
+                    kept.append(e)
+            matches = kept
         # Real events.list returns items under "items"; matching that key name rather than
         # inventing "events" avoids one more silent divergence from the API this fake stands in
         # for.
@@ -452,15 +487,30 @@ class FakeBackend:
         nowhere else. A caller must NOT read an empty `busy` list here as confirmation that the
         calendar exists or is free in production - only as "this fake has no busy interval on
         record for that id."
+
+        A busy interval missing `start` or `end` raises `ValueError` naming the calendar and
+        the interval's position, rather than the bare `KeyError` a direct `iv["start"]` would
+        give (Fix round 2, CINO 2026-09-25) - a bare `KeyError` here becomes an
+        `UnexpectedToolError` whose message the SDK suppresses, same rule as everywhere else in
+        this fake.
         """
-        lower = _parse_rfc3339(time_min)
-        upper = _parse_rfc3339(time_max)
+        lower = _parse_rfc3339(time_min, context="time_min")
+        upper = _parse_rfc3339(time_max, context="time_max")
         calendars_out: dict[str, Any] = {}
         for calendar_id in calendar_ids:
             intervals = self.freebusy.get(calendar_id, [])
-            overlapping = [iv for iv in intervals
-                           if _parse_rfc3339(iv["end"]) > lower
-                           and _parse_rfc3339(iv["start"]) < upper]
+            overlapping = []
+            for index, iv in enumerate(intervals):
+                missing = [k for k in ("start", "end") if k not in iv]
+                if missing:
+                    raise ValueError(
+                        f"freebusy interval {index} for calendar {calendar_id!r} is missing "
+                        f"{missing}: {iv!r}")
+                where = f"freebusy interval {index} for calendar {calendar_id!r}"
+                end = _parse_rfc3339(iv["end"], context=f"{where} end")
+                start = _parse_rfc3339(iv["start"], context=f"{where} start")
+                if end > lower and start < upper:
+                    overlapping.append(iv)
             calendars_out[calendar_id] = {"busy": copy.deepcopy(overlapping)}
         return {"timeMin": time_min, "timeMax": time_max, "calendars": calendars_out}
 
