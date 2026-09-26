@@ -4,12 +4,20 @@ client-secrets file lives, and what to tell the `authenticate`/`login` paths to 
 
 Deliberately free of any `mcp` SDK import, so it is testable without the optional extra - same
 rule as `../csa-google-workspace/src/csa_google_workspace/mcp/_config.py`, which this is a
-much smaller version of. That project's `Settings` also owns allowlists, profiles, export
-directories and a per-thread `Workspace` provider; none of that exists here. This project's
-`Backend` is constructed once by `cli.py` and passed into `create_server` directly - there is
-no lazy per-thread provider indirection to build, because nothing here holds a
-non-thread-safe client the way `googleapiclient` does at the `Workspace` layer that
-`ApiBackend` already wraps per call (see `backend.py`).
+much smaller version of. That project's `Settings` also owns allowlists, profiles and export
+directories; none of that exists here.
+
+**Correction (fix round 1, coordinator review, CINO 2026-09-26): this docstring used to claim
+`Backend` needed no per-thread provider, "because nothing here holds a non-thread-safe client
+the way `googleapiclient` does at the `Workspace` layer." That was backwards.**
+`googleapiclient` clients are NOT thread-safe, full stop - the sibling's `WorkspaceProvider`
+isolates one `Workspace` per `threading.local()` for exactly that reason, and its own
+`SECURITY.md` forbids sharing one across threads. `ApiBackend.from_credentials` (`backend.py`)
+is not "wrapped per call" either: `__init__` stores its Gmail/Calendar discovery clients once,
+for the object's whole lifetime, the same shape as the `Workspace` the sibling isolates.
+`cli.py`'s `_LazyApiBackend` mirrors `WorkspaceProvider` instead - one `ApiBackend` per thread,
+each built lazily on that thread's own first call - and its own docstring carries the full
+reasoning and the confidentiality risk a shared instance would create.
 
 **Nothing resolves eagerly here either.** `settings_from_env` only reads environment variables
 and checks whether a file exists; it never touches the network and never raises for a missing

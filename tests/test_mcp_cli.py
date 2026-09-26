@@ -2,6 +2,8 @@
 stubbed out - actually starting either would block on a socket or a browser, which is exactly
 what a unit test must not do (see `_login.py`/`_auth_flow.py`'s own docstrings on why that
 code only runs from a real terminal)."""
+import threading
+
 from csa_google_gmail_calendar import __version__
 from csa_google_gmail_calendar.mcp import cli
 
@@ -74,3 +76,36 @@ def test_the_default_path_never_loads_credentials_before_a_tool_is_called(monkey
                         lambda backend, policy, attach_policy=None: _FakeServer())
     assert cli.main([], env={}) == 0
     assert ran == {"transport": "stdio"}
+
+
+def test_lazy_api_backend_builds_one_instance_per_thread(monkeypatch):
+    """Fix round 1 (coordinator review): a single `ApiBackend` shared across the MCP SDK's
+    worker threads risks a shared `httplib2` transport handing one caller's response to
+    another - a confidentiality failure on a mail server, not merely a crash. `_LazyApiBackend`
+    must mirror `../csa-google-workspace`'s `WorkspaceProvider`: one instance per thread, the
+    same instance reused on repeat calls from that SAME thread."""
+    monkeypatch.setattr("csa_google_gmail_calendar.auth.load_cached_credentials",
+                        lambda token_path, required: object())
+    monkeypatch.setattr("csa_google_gmail_calendar.backend.ApiBackend.from_credentials",
+                        classmethod(lambda cls, creds: object()))
+
+    class _StubSettings:
+        token_path = "/dev/null"
+        required_scopes: list[str] = []
+
+    lazy = cli._LazyApiBackend(settings=_StubSettings())  # type: ignore[arg-type]
+
+    same_thread_first = lazy._resolve()
+    same_thread_second = lazy._resolve()
+    assert same_thread_first is same_thread_second
+
+    other_thread_result = {}
+
+    def _from_other_thread():
+        other_thread_result["instance"] = lazy._resolve()
+
+    t = threading.Thread(target=_from_other_thread)
+    t.start()
+    t.join()
+
+    assert other_thread_result["instance"] is not same_thread_first

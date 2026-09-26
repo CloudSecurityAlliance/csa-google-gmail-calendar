@@ -9,44 +9,44 @@ exactly one verb, and the parsing must not be the interesting part of this file.
 subcommands that project has are not built yet here - they depend on `_desktop.py`,
 `demo.py`, and `describe_configuration` (task 13), and are added when those land.
 
-## `_LazyApiBackend`: built once, but not at startup
+## `_LazyApiBackend`: one `ApiBackend` per thread, each built lazily
 
 Task 11 wires a real `Backend` into the default run path for the first time (tasks before it
-only ever registered auth tools, which never read `backend` at all). Two constraints, in
-tension, shape `_LazyApiBackend` below:
+only ever registered auth tools, which never read `backend` at all).
 
-**Must not resolve at process start.** `auth.load_cached_credentials` raises `AuthError` when
-no credential is cached yet, or an expired one has no refresh token - the ordinary state of a
-freshly-installed server before its first `login`/`authenticate`. Resolving eagerly here would
-turn that ordinary state into a startup crash, which an MCP client reports as an opaque "server
-failed to start" with no readable remedy - exactly what `_config.py`'s own docstring already
-rules out ("nothing resolves eagerly here"). Deferring the same credential load until a tool
-is actually invoked turns it back into an ordinary `ToolError` through `_base._errors`'s
-existing `exc.AuthError` branch, which already tells the caller to call `authenticate`.
+**Fix round 1 (coordinator review, CINO 2026-09-26): this used to build and share ONE
+`ApiBackend` instance across every thread, and the reasoning that justified it was wrong on
+both halves.** `googleapiclient` clients are NOT thread-safe - `../csa-google-workspace`'s own
+`WorkspaceProvider` isolates one `Workspace` per `threading.local()` for exactly this reason,
+and that project's `SECURITY.md` forbids sharing one across threads outright; the previous
+version of this docstring claimed the opposite precedent, which was simply false. And
+`ApiBackend.from_credentials` (`backend.py`) is not "wrapped per call" the way the false
+premise claimed - `__init__` stores `gmail_service`/`calendar_service` once, for the object's
+whole lifetime, identical in shape to the `Workspace` the sibling isolates per thread. Sharing
+one `ApiBackend` under concurrent `execute()` calls (the MCP SDK dispatches sync tool handlers
+onto worker threads, via `anyio.to_thread.run_sync` - concurrent calls on different threads are
+routine, not a hypothetical) risks a shared `httplib2` transport handing message A's response
+body back as the answer to a request about message B: a confidentiality failure, not a crash,
+on a server whose whole purpose is handling someone's mail.
 
-**Built once, not once per thread or per call.** `_config.py`'s own docstring already settles
-this: "this project's `Backend` is constructed once by `cli.py` and passed into `create_server`
-directly - there is no lazy per-thread provider indirection to build." `ApiBackend` holds one
-`discovery.build()`-constructed Gmail service and one Calendar service for its whole lifetime
-(`backend.py`'s `from_credentials`), not a fresh one per call, so building a SECOND instance
-per thread would not buy back any safety `from_credentials` itself does not already have -
-it would only mean N discovery-document loads and N credential reads instead of one.
+**Must still not resolve at process start.** `auth.load_cached_credentials` raises `AuthError`
+when no credential is cached yet, or an expired one has no refresh token - the ordinary state
+of a freshly-installed server before its first `login`/`authenticate`. Resolving eagerly here
+would turn that ordinary state into a startup crash, which an MCP client reports as an opaque
+"server failed to start" with no readable remedy - exactly what `_config.py`'s own docstring
+rules out ("nothing resolves eagerly here"). Deferring the same credential load until a tool is
+actually invoked turns it back into an ordinary `ToolError` through `_base._errors`'s existing
+`exc.AuthError` branch, which already tells the caller to call `authenticate`.
 
-Both constraints together: resolve lazily, on the FIRST call from any thread, then cache and
-reuse that one instance for every call after - a memoizing wrapper around
-`ApiBackend.from_credentials`, not a decision this project has not already made. The
-`threading.Lock` below exists only to keep two concurrent first calls (the MCP SDK runs sync
-tool handlers on a worker thread, so this is a real possibility, not a hypothetical) from
-racing into building two separate instances; every call after the first never touches the lock.
-
-**Residual risk, named rather than silently accepted.** `googleapiclient`'s discovery
-`Resource` objects are commonly documented as unsafe to share across threads under concurrent
-`execute()` calls (the underlying `httplib2`/`google-auth-httplib2` transport can be stateful
-per instance). `_config.py`'s design already accepts a single shared instance over a
-per-thread one; this class carries that same acceptance forward rather than re-litigating it,
-but the risk is real and is flagged in the task 11 report for whoever owns that trade-off to
-revisit - concurrent Gmail/Calendar tool calls under load are exactly the condition that would
-surface it, and this project has no test that exercises concurrent calls to notice a problem.
+**The fix: `threading.local()`, one `ApiBackend` per thread, each built on that thread's own
+first call** - mirroring `WorkspaceProvider` exactly rather than inventing a different shape
+for the identical problem. No lock: each thread only ever touches its own slot, so there is
+nothing to race, and (per the coordinator's explicit instruction) serialising every call behind
+one lock was rejected - that would defeat the SDK's whole reason for dispatching onto worker
+threads in the first place, trading a correctness bug for a throughput regression. The
+per-thread cost is one extra discovery-document load and one extra credential read per worker
+thread the SDK happens to use, not per call - cheap next to getting the sibling's isolation
+property back.
 """
 from __future__ import annotations
 
@@ -67,25 +67,26 @@ from .server import create_server
 
 
 class _LazyApiBackend:
-    """Defers `ApiBackend.from_credentials` (and the credential load it requires) until the
-    first `Backend` method is actually called - see the module docstring for why this must be
-    both lazy AND built only once. Satisfies the `Backend` Protocol structurally via
-    `__getattr__`, the same pattern `policy.PolicyBackend` already uses for the identical
-    reason (a plain attribute/method proxy, not a formal subclass)."""
+    """One `ApiBackend` per thread, each built lazily on that thread's own first `Backend`
+    method call - see the module docstring for why sharing a single instance across threads is
+    a confidentiality risk, not merely a style choice, and why this mirrors
+    `../csa-google-workspace`'s `WorkspaceProvider` rather than caching one instance globally.
+    Satisfies the `Backend` Protocol structurally via `__getattr__`, the same pattern
+    `policy.PolicyBackend` already uses for the identical reason (a plain attribute/method
+    proxy, not a formal subclass)."""
 
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
-        self._inner: ApiBackend | None = None
-        self._lock = threading.Lock()
+        self._local = threading.local()
 
     def _resolve(self) -> ApiBackend:
-        if self._inner is None:
-            with self._lock:
-                if self._inner is None:  # double-checked: only the first caller builds it
-                    creds = auth_mod.load_cached_credentials(
-                        self._settings.token_path, self._settings.required_scopes)
-                    self._inner = ApiBackend.from_credentials(creds)
-        return self._inner
+        inner = getattr(self._local, "inner", None)
+        if inner is None:
+            creds = auth_mod.load_cached_credentials(
+                self._settings.token_path, self._settings.required_scopes)
+            inner = ApiBackend.from_credentials(creds)
+            self._local.inner = inner
+        return inner
 
     def __getattr__(self, name: str) -> Any:
         if name.startswith("_"):
@@ -153,8 +154,10 @@ def main(argv: Sequence[str] | None = None, env: Mapping[str, str] | None = None
         print(f"csa-google-gmail-calendar: {line}", file=sys.stderr)
 
     # `PolicyBackend` wrapping `_LazyApiBackend`: the credential load (and the Gmail/Calendar
-    # discovery-client construction it enables) happens on the FIRST tool call, not here - see
-    # `_LazyApiBackend`'s own docstring above for why. `attach_policy` reads
+    # discovery-client construction it enables) happens on each worker thread's OWN first tool
+    # call, not here and not shared across threads - see `_LazyApiBackend`'s own docstring
+    # above for why a single shared instance is a confidentiality risk, not just a style
+    # choice. `attach_policy` reads
     # `CSA_GGC_ATTACH_DIR` from the real process environment (`_attachments.from_env`,
     # like `settings.token_path` above it) rather than from the `env` mapping this function
     # was handed, matching `_config.py`'s own note on why `token_path` does the same.
