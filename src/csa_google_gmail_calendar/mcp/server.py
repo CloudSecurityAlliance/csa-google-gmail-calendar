@@ -18,17 +18,22 @@ protects an embedder calling `Backend` directly, without this MCP layer at all.
 
 ## What this task registers, and what later tasks add
 
-Only the auth-lifecycle tools (`_tools/auth.py`) exist yet. `backend` and `attach_policy` are
-accepted and stashed on the returned server (`app._csa_backend`, `app._csa_attach_policy`) for
-tasks 11/12 to read when they add `register_mail_*_tools`/`register_calendar_*_tools` calls
-below - `backend=None` is valid at this stage precisely because nothing registered here calls
-it. `flavour` is accepted and stashed the same way; `_flavours.py` (task 13) is what gives it
-real filtering behaviour and validates its value. Passing an unrecognised flavour string today
-is not an error - there is no `full`/`google`/`core` distinction to violate yet.
+The auth-lifecycle tools (`_tools/auth.py`) and the 29 Gmail tools (`_tools/mail_read.py`,
+`_tools/mail_write.py`, `_tools/mail_send.py` - task 11) are registered here.
+`_tools/calendar_read.py`/`_tools/calendar_write.py` (task 12) join this list as they land.
+`backend` is `Backend | None` still: every mail tool closes over it directly rather than
+resolving it lazily itself, so `backend=None` remains valid ONLY for callers (mostly tests)
+that never actually invoke a registered mail tool's function - registration alone never reads
+it. `cli.py`'s real stdio path never passes `None`; see that module for why the real
+`Backend` is itself a lazy, deferred-construction wrapper rather than something resolved here.
+`flavour` is accepted and stashed the same way as before; `_flavours.py` (task 13) is what
+gives it real filtering behaviour and validates its value. Passing an unrecognised flavour
+string today is not an error - there is no `full`/`google`/`core` distinction to violate yet.
 """
 from __future__ import annotations
 
 import os
+from typing import cast
 
 from mcp.server import MCPServer
 
@@ -37,7 +42,12 @@ from .._attachments import AttachmentPolicy
 from ..backend import Backend
 from ..policy import Policy
 from ._config import settings_from_env
-from ._tools import register_auth_tools
+from ._tools import (
+    register_auth_tools,
+    register_mail_read_tools,
+    register_mail_send_tools,
+    register_mail_write_tools,
+)
 
 __all__ = ["INSTRUCTIONS", "create_server"]
 
@@ -81,5 +91,17 @@ def create_server(backend: Backend | None, policy: Policy, flavour: str = "full"
 
     settings = settings_from_env(os.environ, policy)
     register_auth_tools(app, settings)
+    # `cast`, not a signature change to `Backend | None`: every `register_mail_*_tools`
+    # function's own signature stays `Backend` (non-Optional) because that is the true
+    # contract once a tool actually RUNS - threading `| None` through every internal
+    # `backend.method(...)` call site would need a null-check nobody could ever hit in
+    # practice. `backend=None` is real only for registration-time tests that list/introspect
+    # tools without calling their `.fn` (see this module's own docstring) - the cast says so
+    # once, here, rather than each tool module re-deriving the same "this can't actually be
+    # None when called" judgement.
+    mail_backend = cast(Backend, backend)
+    register_mail_read_tools(app, mail_backend, policy, attach_policy)
+    register_mail_write_tools(app, mail_backend, policy, attach_policy)
+    register_mail_send_tools(app, mail_backend, policy, attach_policy)
 
     return app

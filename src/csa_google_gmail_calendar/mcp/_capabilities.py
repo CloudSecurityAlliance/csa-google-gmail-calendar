@@ -39,6 +39,38 @@ TOOL_CAPABILITIES: dict[str, str | None] = {
     "authenticate": None,
     "auth_status": None,
     "logout": None,
+    # --- Gmail reads (task 11, `_tools/mail_read.py`) - policy.MAIL_READ ---
+    "search_messages": "mail.read",
+    "get_message": "mail.read",
+    "get_thread": "mail.read",
+    "list_threads": "mail.read",
+    "get_attachment": "mail.read",
+    "list_labels": "mail.read",
+    "list_drafts": "mail.read",
+    "get_draft": "mail.read",
+    # --- Gmail organising/composing (task 11, `_tools/mail_write.py`) - policy.MAIL_WRITE ---
+    "create_draft": "mail.write",
+    "update_draft": "mail.write",
+    "delete_draft": "mail.write",  # irreversible, but MAIL_WRITE per policy._GATES's own note
+    "modify_message_labels": "mail.write",
+    "modify_thread_labels": "mail.write",
+    "archive_email": "mail.write",
+    "archive_thread": "mail.write",
+    "mark_read": "mail.write",
+    "mark_unread": "mail.write",
+    "create_label": "mail.write",
+    "trash_email": "mail.write",
+    "trash_thread": "mail.write",
+    "untrash_email": "mail.write",
+    "untrash_thread": "mail.write",
+    "mark_spam": "mail.write",
+    "unmark_spam": "mail.write",
+    # --- Gmail sending (task 11, `_tools/mail_send.py`) - policy.MAIL_SEND ---
+    "send_message": "mail.send",
+    "send_draft": "mail.send",
+    "reply": "mail.send",
+    "reply_all": "mail.send",
+    "forward": "mail.send",
 }
 
 

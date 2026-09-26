@@ -50,6 +50,27 @@ def test_the_default_path_builds_a_server_and_runs_it_over_stdio(monkeypatch):
             ran["transport"] = transport
 
     monkeypatch.setattr("csa_google_gmail_calendar.mcp.cli.create_server",
-                        lambda backend, policy: _FakeServer())
+                        lambda backend, policy, attach_policy=None: _FakeServer())
+    assert cli.main([], env={}) == 0
+    assert ran == {"transport": "stdio"}
+
+
+def test_the_default_path_never_loads_credentials_before_a_tool_is_called(monkeypatch):
+    """`_LazyApiBackend` must not resolve at startup - a missing/expired credential is the
+    ordinary state of a freshly-installed server and must surface as a tool error on first
+    use, not a startup crash. Failing `auth.load_cached_credentials` here, and never calling
+    it, proves the default path never touches it before a tool actually runs."""
+    ran = {}
+
+    class _FakeServer:
+        def run(self, transport):
+            ran["transport"] = transport
+
+    def _boom(*a, **kw):
+        raise AssertionError("credentials must not be loaded before a tool is called")
+
+    monkeypatch.setattr("csa_google_gmail_calendar.auth.load_cached_credentials", _boom)
+    monkeypatch.setattr("csa_google_gmail_calendar.mcp.cli.create_server",
+                        lambda backend, policy, attach_policy=None: _FakeServer())
     assert cli.main([], env={}) == 0
     assert ran == {"transport": "stdio"}

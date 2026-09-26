@@ -25,7 +25,44 @@ from csa_google_gmail_calendar.mcp._capabilities import TOOL_CAPABILITIES
 # here gets a green suite anyway: the test has nothing to check it against. Every new
 # capability-gated tool this project adds must get a row here, in the same change that
 # registers it - carried forward into task 11's brief as well.
-_TOOL_TO_GATED_METHOD: dict[str, str] = {}
+_TOOL_TO_GATED_METHOD: dict[str, str] = {
+    # --- Gmail reads ---
+    "search_messages": "search_messages",
+    "get_message": "get_message",
+    "get_thread": "get_thread",
+    "list_threads": "list_threads",
+    "get_attachment": "get_attachment",
+    "list_labels": "list_labels",
+    "list_drafts": "list_drafts",
+    "get_draft": "get_draft",
+    # --- Gmail organising/composing - tool name differs from the Backend method it calls
+    # for three of these (archive_email -> archive_message, trash_email -> trash_message,
+    # untrash_email -> untrash_message; ADR-001's naming lives on the TOOL side only) ---
+    "create_draft": "create_draft",
+    "update_draft": "update_draft",
+    "delete_draft": "delete_draft",
+    "modify_message_labels": "modify_message_labels",
+    "modify_thread_labels": "modify_thread_labels",
+    "archive_email": "archive_message",
+    "archive_thread": "archive_thread",
+    "mark_read": "mark_read",
+    "mark_unread": "mark_unread",
+    "create_label": "create_label",
+    "trash_email": "trash_message",
+    "trash_thread": "trash_thread",
+    "untrash_email": "untrash_message",
+    "untrash_thread": "untrash_thread",
+    "mark_spam": "mark_spam",
+    "unmark_spam": "unmark_spam",
+    # --- Gmail sending - reply/reply_all/forward similarly rename against their Backend
+    # method (reply -> reply_message, reply_all -> reply_all_message, forward ->
+    # forward_message) ---
+    "send_message": "send_message",
+    "send_draft": "send_draft",
+    "reply": "reply_message",
+    "reply_all": "reply_all_message",
+    "forward": "forward_message",
+}
 
 
 def _tool_names(server) -> set[str]:
