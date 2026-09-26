@@ -1,6 +1,6 @@
 import pytest
 
-from csa_google_gmail_calendar.backend import Backend, FakeBackend
+from csa_google_gmail_calendar.backend import ApiBackend, Backend, FakeBackend
 from csa_google_gmail_calendar.exceptions import NotFoundError
 
 
@@ -9,6 +9,14 @@ def test_fake_implements_every_protocol_method():
     wanted = {m for m in dir(Backend) if not m.startswith("_")}
     missing = [m for m in wanted if not callable(getattr(FakeBackend, m, None))]
     assert not missing, f"FakeBackend is missing {missing}"
+
+
+def test_api_backend_implements_every_protocol_method():
+    """A method the real backend lacks is one that works in every offline test and fails only
+    in production - this is the check that would have caught that before a user did."""
+    wanted = {m for m in dir(Backend) if not m.startswith("_")}
+    missing = [m for m in wanted if not callable(getattr(ApiBackend, m, None))]
+    assert not missing, f"ApiBackend is missing {missing}"
 
 
 def test_get_message_returns_the_seeded_message():

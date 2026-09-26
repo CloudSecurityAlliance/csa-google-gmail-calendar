@@ -1,7 +1,7 @@
 """Backend seam. `Backend` is the Protocol every capability in `policy._GATES` gates by name;
-`FakeBackend` is the in-memory double the whole offline test suite runs against. A real
-`ApiBackend` (Gmail + Calendar over `google-api-python-client`) arrives in a later task and
-must satisfy the same Protocol without either side needing to change.
+`FakeBackend` is the in-memory double the whole offline test suite runs against. `ApiBackend`
+(Gmail + Calendar over `google-api-python-client`) is the real thing, satisfying the same
+Protocol without either side needing to change.
 
 Every method here is keyword-only. That is not house style for its own sake: `policy.Policy`
 and `PolicyBackend` gate by method *name* alone and forward `*args, **kwargs` untouched, so a
@@ -17,10 +17,16 @@ rather than the leading-underscore, copy-on-construct fields the sibling project
 from __future__ import annotations
 
 import copy
+from collections.abc import Callable
 from datetime import datetime, timezone
 from typing import Any, Protocol
 
-from .exceptions import ConflictError, NotFoundError
+from google.auth.credentials import Credentials
+from googleapiclient import discovery
+from googleapiclient.errors import HttpError
+
+from ._mime import upload_strategy
+from .exceptions import AccessError, ApiError, AuthError, ConflictError, CsaGoogleError, NotFoundError
 
 
 class Backend(Protocol):
@@ -565,3 +571,358 @@ class FakeBackend:
         self._get_event(calendar_id, event_id)  # validates existence/calendar before deleting
         del self.events[event_id]
         return {}  # mirrors Google's empty 204 body for a successful delete
+
+
+def _map_http_error(exc: HttpError) -> CsaGoogleError:
+    """Translate a googleapiclient `HttpError` into this project's own exception hierarchy, by
+    HTTP status. `exc.reason` is already Google's parsed `error.message` field (`HttpError`
+    extracts it from the response body itself, in `_get_reason`) - never the raw body, which
+    can echo request content (a search query, a recipient address) that should not end up in a
+    message that may be logged.
+
+    412 gets its own branch, not a fallthrough to 409: a stale `If-Match` etag on the event
+    patch path is a `ConflictError` like 409, but naming it "the event changed underneath this
+    request" is what tells a caller what actually happened and what to do next (re-fetch,
+    then retry) - a generic conflict message would leave that caller guessing.
+
+    429 and 5xx are `ApiError` with an explicit note that a retry may succeed - this project
+    does not add a retry layer of its own (see `ApiBackend`'s docstring for why), so that note
+    is the only signal a caller gets that the failure might be transient.
+    """
+    status = exc.resp.status
+    message = exc.reason or "no error message provided"
+    detail = f"Google API error {status}: {message}"
+    if status == 404:
+        return NotFoundError(detail)
+    if status == 403:
+        return AccessError(detail)
+    if status == 401:
+        return AuthError(detail)
+    if status == 412:
+        return ConflictError(
+            f"{detail} - the resource changed underneath this request (etag mismatch); "
+            f"re-fetch it and retry with the new etag")
+    if status == 409:
+        return ConflictError(detail)
+    if status == 429 or status >= 500:
+        return ApiError(f"{detail} - a retry may succeed")
+    return ApiError(detail)
+
+
+def _translate(call: Callable[[], Any]) -> Any:
+    """Every `ApiBackend` method routes its `.execute()` through this, so an `HttpError`
+    reaching a caller (and, past that, the MCP layer, where it would otherwise become an
+    `UnexpectedToolError` whose message the SDK suppresses) always arrives translated."""
+    try:
+        return call()
+    except HttpError as exc:
+        raise _map_http_error(exc) from exc
+
+
+class ApiBackend:
+    """`Backend` over real Gmail and Calendar API calls (`google-api-python-client`).
+
+    Every method's real work is one or two discovery-client calls threaded through
+    `_translate`, which is what turns Google's `HttpError` into this project's own hierarchy
+    (see `_map_http_error`). Construct directly from already-built discovery services
+    (mainly for tests, which hand it a recording double in place of a real service), or via
+    `from_credentials`, which builds both from a single `Credentials` object.
+
+    **`userId="me"` is threaded through one seam, `_mail`, rather than repeated at every Gmail
+    call site.** Every `users.*` Gmail method requires it; a call site that forgot it would
+    still often work by accident (many discovery methods default an omitted `userId` to
+    `"me"` themselves) but that is Google's leniency, not a guarantee this project should rely
+    on 25 separate times. `_mail(bound_method, **kwargs)` supplies it once and forwards the
+    rest of `kwargs` untouched - a call site cannot omit it because it never has the chance to
+    supply it at all.
+
+    **Retry: none is added here, and none happens by default.** `HttpRequest.execute` takes a
+    `num_retries` argument that defaults to `0`; verified directly against the installed
+    `google-api-python-client` (its own `execute` docstring: "If zero (default), we attempt
+    the request only once") - with `num_retries=0`, `_retry_request` does not retry at all,
+    on any status, including 429/5xx. This project never passes `num_retries`, so an
+    `ApiBackend` call fails on the first bad response every time; the 429/5xx branch of
+    `_map_http_error` says "a retry may succeed" precisely because nothing below this class
+    will attempt one. Adding a retry layer (which call sites are safe to retry - reads and
+    idempotent writes, not `send_message` - and with what backoff) is a deliberate later
+    decision, not an accidental gap; this task does not add one.
+
+    **Pagination.** `search_messages`'s signature accepts `page_token`, so a caller can drive
+    Gmail's own paging loop and a truncated result is distinguishable from a complete one via
+    `nextPageToken` in the raw response (passed through unchanged - real `messages.list`
+    already returns that key, the same shape `FakeBackend` mirrors). `list_events` cannot: the
+    `Backend` Protocol's `list_events` signature has no `page_token` parameter, even though
+    Calendar's real `events.list` paginates and can return a `nextPageToken` in exactly the
+    same way. `ApiBackend.list_events` passes the raw response through unchanged, so a
+    truncated result IS still distinguishable (the token is there in the dict), but nothing in
+    this Protocol lets a caller ask for the next page - a caller told "here are 25 events" with
+    no way to request the other 275 has been given a silent undercount for any calendar with
+    more events in the window than `limit`. That is a Protocol-level gap, not something this
+    task's `ApiBackend` can fix without changing `Backend` itself (which `FakeBackend` and
+    every existing test also implement) - flagged here for a later task, not fixed in this one.
+
+    **Resumable upload.** `_mime.upload_strategy` decides simple-vs-resumable from the size of
+    the already-built API `raw` payload. `ApiBackend` calls it on every outbound/draft path
+    and raises `ApiError` for the resumable case rather than silently sending a request Google
+    will reject: a resumable upload session (`POST .../upload/gmail/v1/users/me/messages/send`
+    with `uploadType=resumable`, an initial empty-body request to obtain a `Location` session
+    URI, then one or more `PUT`s of the payload in chunks, each acknowledged before the next)
+    is materially more machinery than this task can carry - a second HTTP round trip shape
+    outside anything `googleapiclient`'s generated `Resource.send`/`Resource.create` methods
+    do for you automatically from a plain `body={"raw": ...}` call. A message or draft this
+    large is also already unusual (5 MB of base64url payload is roughly 3.5 MB of RFC822
+    content - most messages, even with attachments, stay under it via `_mime.MESSAGE_LIMIT`'s
+    much larger 25 MB ceiling), so refusing loudly here is a real gap to close in a later task,
+    not a silent send-and-hope.
+    """
+
+    def __init__(self, gmail_service: Any, calendar_service: Any) -> None:
+        self._gmail = gmail_service
+        self._cal = calendar_service
+
+    @classmethod
+    def from_credentials(cls, credentials: Credentials) -> ApiBackend:
+        gmail_service = discovery.build("gmail", "v1", credentials=credentials)
+        calendar_service = discovery.build("calendar", "v3", credentials=credentials)
+        return cls(gmail_service, calendar_service)
+
+    def _mail(self, method: Callable[..., Any], **kwargs: Any) -> Any:
+        """`method` is a bound Gmail discovery resource method (e.g.
+        `self._gmail.users().messages().get`), not yet called. Supplies `userId="me"` and
+        forwards everything else through `_translate`."""
+        return _translate(method(userId="me", **kwargs).execute)
+
+    def _cal_execute(self, request: Any) -> Any:
+        return _translate(request.execute)
+
+    def _send(self, *, raw: str, thread_id: str | None = None) -> dict[str, Any]:
+        if upload_strategy(raw) == "resumable":
+            raise ApiError(
+                "this message's payload is at or above the 5 MB simple-upload threshold "
+                "(_mime.upload_strategy); resumable upload is not implemented by this backend "
+                "and a plain send would risk being rejected or truncated by Google")
+        body: dict[str, Any] = {"raw": raw}
+        if thread_id:
+            body["threadId"] = thread_id
+        return self._mail(self._gmail.users().messages().send, body=body)
+
+    # --- mail: reads -----------------------------------------------------
+
+    def search_messages(self, *, query: str, limit: int = 25,
+                        page_token: str | None = None) -> dict[str, Any]:
+        kwargs: dict[str, Any] = {"q": query, "maxResults": limit}
+        if page_token:
+            kwargs["pageToken"] = page_token
+        return self._mail(self._gmail.users().messages().list, **kwargs)
+
+    def get_message(self, *, message_id: str, fmt: str = "full") -> dict[str, Any]:
+        return self._mail(self._gmail.users().messages().get, id=message_id, format=fmt)
+
+    def get_thread(self, *, thread_id: str, fmt: str = "full") -> dict[str, Any]:
+        return self._mail(self._gmail.users().threads().get, id=thread_id, format=fmt)
+
+    def list_threads(self, *, query: str | None = None, limit: int = 25) -> dict[str, Any]:
+        kwargs: dict[str, Any] = {"maxResults": limit}
+        if query:
+            kwargs["q"] = query
+        return self._mail(self._gmail.users().threads().list, **kwargs)
+
+    def get_attachment(self, *, message_id: str, attachment_id: str) -> dict[str, Any]:
+        return self._mail(self._gmail.users().messages().attachments().get,
+                          messageId=message_id, id=attachment_id)
+
+    def list_labels(self) -> list[dict[str, Any]]:
+        result = self._mail(self._gmail.users().labels().list)
+        return result.get("labels", [])
+
+    def list_drafts(self, *, limit: int = 25) -> list[dict[str, Any]]:
+        result = self._mail(self._gmail.users().drafts().list, maxResults=limit)
+        return result.get("drafts", [])
+
+    def get_draft(self, *, draft_id: str) -> dict[str, Any]:
+        return self._mail(self._gmail.users().drafts().get, id=draft_id)
+
+    def list_history(self, *, start_history_id: str) -> dict[str, Any]:
+        return self._mail(self._gmail.users().history().list, startHistoryId=start_history_id)
+
+    def get_profile(self) -> dict[str, Any]:
+        return self._mail(self._gmail.users().getProfile)
+
+    # --- mail: reversible writes ------------------------------------------
+
+    def create_draft(self, *, raw: str) -> dict[str, Any]:
+        if upload_strategy(raw) == "resumable":
+            raise ApiError(
+                "this draft's payload is at or above the 5 MB simple-upload threshold "
+                "(_mime.upload_strategy); resumable upload is not implemented by this backend "
+                "and a plain create would risk being rejected or truncated by Google")
+        return self._mail(self._gmail.users().drafts().create, body={"message": {"raw": raw}})
+
+    def update_draft(self, *, draft_id: str, raw: str) -> dict[str, Any]:
+        if upload_strategy(raw) == "resumable":
+            raise ApiError(
+                "this draft's payload is at or above the 5 MB simple-upload threshold "
+                "(_mime.upload_strategy); resumable upload is not implemented by this backend "
+                "and a plain update would risk being rejected or truncated by Google")
+        return self._mail(self._gmail.users().drafts().update, id=draft_id,
+                          body={"message": {"raw": raw}})
+
+    def delete_draft(self, *, draft_id: str) -> dict[str, Any]:
+        return self._mail(self._gmail.users().drafts().delete, id=draft_id)
+
+    def modify_message_labels(self, *, message_id: str, add: list[str] | None = None,
+                              remove: list[str] | None = None) -> dict[str, Any]:
+        body: dict[str, Any] = {}
+        if add:
+            body["addLabelIds"] = add
+        if remove:
+            body["removeLabelIds"] = remove
+        return self._mail(self._gmail.users().messages().modify, id=message_id, body=body)
+
+    def modify_thread_labels(self, *, thread_id: str, add: list[str] | None = None,
+                             remove: list[str] | None = None) -> dict[str, Any]:
+        body: dict[str, Any] = {}
+        if add:
+            body["addLabelIds"] = add
+        if remove:
+            body["removeLabelIds"] = remove
+        return self._mail(self._gmail.users().threads().modify, id=thread_id, body=body)
+
+    def archive_message(self, *, message_id: str) -> dict[str, Any]:
+        return self.modify_message_labels(message_id=message_id, remove=["INBOX"])
+
+    def archive_thread(self, *, thread_id: str) -> dict[str, Any]:
+        return self.modify_thread_labels(thread_id=thread_id, remove=["INBOX"])
+
+    def mark_read(self, *, message_id: str) -> dict[str, Any]:
+        return self.modify_message_labels(message_id=message_id, remove=["UNREAD"])
+
+    def mark_unread(self, *, message_id: str) -> dict[str, Any]:
+        return self.modify_message_labels(message_id=message_id, add=["UNREAD"])
+
+    def trash_message(self, *, message_id: str) -> dict[str, Any]:
+        return self._mail(self._gmail.users().messages().trash, id=message_id)
+
+    def trash_thread(self, *, thread_id: str) -> dict[str, Any]:
+        return self._mail(self._gmail.users().threads().trash, id=thread_id)
+
+    def untrash_message(self, *, message_id: str) -> dict[str, Any]:
+        return self._mail(self._gmail.users().messages().untrash, id=message_id)
+
+    def untrash_thread(self, *, thread_id: str) -> dict[str, Any]:
+        return self._mail(self._gmail.users().threads().untrash, id=thread_id)
+
+    def mark_spam(self, *, message_id: str) -> dict[str, Any]:
+        # Real Gmail moves a spammed message out of the inbox, same as FakeBackend (Fix round
+        # 1, CINO 2026-09-25) - there is no dedicated spam/unspam endpoint, so this is a label
+        # modify like archive/read, not a call of its own.
+        return self.modify_message_labels(message_id=message_id, add=["SPAM"], remove=["INBOX"])
+
+    def unmark_spam(self, *, message_id: str) -> dict[str, Any]:
+        return self.modify_message_labels(message_id=message_id, remove=["SPAM"], add=["INBOX"])
+
+    def create_label(self, *, name: str) -> dict[str, Any]:
+        return self._mail(self._gmail.users().labels().create, body={"name": name})
+
+    # --- mail: outbound ----------------------------------------------------
+
+    def send_message(self, *, raw: str) -> dict[str, Any]:
+        return self._send(raw=raw)
+
+    def send_draft(self, *, draft_id: str) -> dict[str, Any]:
+        return self._mail(self._gmail.users().drafts().send, body={"id": draft_id})
+
+    def reply_message(self, *, raw: str, thread_id: str) -> dict[str, Any]:
+        return self._send(raw=raw, thread_id=thread_id)
+
+    def reply_all_message(self, *, raw: str, thread_id: str) -> dict[str, Any]:
+        # Identical to reply_message at this layer, same as FakeBackend: what differs is the
+        # To/Cc header set already baked into `raw` by whatever built it, not anything this
+        # Backend method does.
+        return self._send(raw=raw, thread_id=thread_id)
+
+    def forward_message(self, *, raw: str) -> dict[str, Any]:
+        return self._send(raw=raw)
+
+    # --- calendar ------------------------------------------------------------
+
+    def list_calendars(self) -> list[dict[str, Any]]:
+        result = self._cal_execute(self._cal.calendarList().list())
+        return result.get("items", [])
+
+    def get_calendar(self, *, calendar_id: str) -> dict[str, Any]:
+        return self._cal_execute(self._cal.calendars().get(calendarId=calendar_id))
+
+    def list_events(self, *, calendar_id: str = "primary", time_min: str | None = None,
+                    time_max: str | None = None, query: str | None = None,
+                    limit: int = 25) -> dict[str, Any]:
+        # timeMin/timeMax/q are server-side parameters here, not client-side filters - Google's
+        # own overlap semantics for timeMin/timeMax (documented, and the same ones FakeBackend
+        # reproduces for the offline suite) apply on its servers. Passed through unchanged
+        # rather than re-filtered, so the two implementations cannot silently disagree.
+        kwargs: dict[str, Any] = {"calendarId": calendar_id, "maxResults": limit}
+        if time_min:
+            kwargs["timeMin"] = time_min
+        if time_max:
+            kwargs["timeMax"] = time_max
+        if query:
+            kwargs["q"] = query
+        return self._cal_execute(self._cal.events().list(**kwargs))
+
+    def get_event(self, *, calendar_id: str, event_id: str) -> dict[str, Any]:
+        return self._cal_execute(self._cal.events().get(calendarId=calendar_id, eventId=event_id))
+
+    def query_freebusy(self, *, time_min: str, time_max: str,
+                       calendar_ids: list[str]) -> dict[str, Any]:
+        body = {"timeMin": time_min, "timeMax": time_max,
+                "items": [{"id": cid} for cid in calendar_ids]}
+        return self._cal_execute(self._cal.freebusy().query(body=body))
+
+    def create_event(self, *, calendar_id: str, body: dict[str, Any],
+                     send_updates: str = "all") -> dict[str, Any]:
+        return self._cal_execute(self._cal.events().insert(
+            calendarId=calendar_id, body=body, sendUpdates=send_updates))
+
+    def update_event(self, *, calendar_id: str, event_id: str, body: dict[str, Any],
+                     send_updates: str = "all",
+                     etag: str | None = None) -> dict[str, Any]:
+        # A patch, not a put - only keys present in `body` are replaced, matching FakeBackend.
+        # `If-Match` is the etag concurrency path: set on the request object before `.execute()`
+        # when a caller supplied one, omitted entirely otherwise, so a stale write is refused by
+        # Google (412) rather than silently overwriting a change this caller never saw - handled
+        # generically by `_map_http_error`.
+        req = self._cal.events().patch(calendarId=calendar_id, eventId=event_id,
+                                       body=body, sendUpdates=send_updates)
+        if etag:
+            req.headers["If-Match"] = etag
+        return self._cal_execute(req)
+
+    def respond_to_event(self, *, calendar_id: str, event_id: str, response: str,
+                         comment: str | None = None) -> dict[str, Any]:
+        # No native "RSVP" endpoint exists on the real Calendar API - responding is a
+        # read-modify-write against the `attendees` array, same shape FakeBackend models:
+        # find the caller's own attendee entry (via get_profile(), not a guessed "self" flag),
+        # update it, PATCH the whole array back. `events.patch` replaces an array field
+        # wholesale rather than merging one element into it, so the full list has to travel
+        # both ways.
+        me = self.get_profile().get("emailAddress")
+        event = self.get_event(calendar_id=calendar_id, event_id=event_id)
+        attendees = event.setdefault("attendees", [])
+        for attendee in attendees:
+            if attendee.get("email") == me:
+                attendee["responseStatus"] = response
+                if comment is not None:
+                    attendee["comment"] = comment
+                break
+        else:
+            new_attendee: dict[str, Any] = {"email": me, "responseStatus": response}
+            if comment is not None:
+                new_attendee["comment"] = comment
+            attendees.append(new_attendee)
+        return self._cal_execute(self._cal.events().patch(
+            calendarId=calendar_id, eventId=event_id, body={"attendees": attendees}))
+
+    def delete_event(self, *, calendar_id: str, event_id: str,
+                     send_updates: str = "all") -> dict[str, Any]:
+        return self._cal_execute(self._cal.events().delete(
+            calendarId=calendar_id, eventId=event_id, sendUpdates=send_updates))
