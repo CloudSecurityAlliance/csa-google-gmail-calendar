@@ -1,4 +1,5 @@
 import base64
+import re
 
 import pytest
 
@@ -194,17 +195,48 @@ def test_malformed_base64_in_a_body_part_does_not_break_the_whole_message():
                for t in m.transformations)
 
 
-def test_invalid_utf8_bytes_are_replaced_and_the_count_is_disclosed():
-    """FIX 3 (fix round 1). `errors="replace"` is right - refusing to show a body over two bad
-    bytes helps nobody - but silent substitution with no disclosure means `transformations`
-    positively (and wrongly) asserts nothing happened. The count, not just a bare flag, is what
-    lets a reader judge whether two bytes were mangled or the whole body was."""
-    raw = b"hello \xff\xfe world"  # two bytes that are not valid UTF-8 on their own
-    data = base64.urlsafe_b64encode(raw).decode()
-    p = {"mimeType": "text/plain", "headers": [], "body": {"data": data}}
-    m = Mail(FakeBackend(messages={"m1": _msg(p)})).read_message("m1")
+def _disclosed_replacement_count(transformations: list[str]) -> int:
+    """Extract the "N byte(s) ... were not valid UTF-8" count as an integer, so a test can pin
+    the exact number rather than doing a substring check (`"2" in t` also matches `"12"`,
+    `"20"`, or any other string containing that digit - fix round 2 finding)."""
+    matches = [re.search(r"(\d+) byte\(s\).*not valid UTF-8", t) for t in transformations]
+    hits = [mt for mt in matches if mt]
+    assert len(hits) == 1, f"expected exactly one UTF-8-replacement disclosure, got: {transformations}"
+    return int(hits[0].group(1))
+
+
+def test_invalid_utf8_bytes_are_replaced_and_the_count_is_the_true_byte_count():
+    """FIX 3 (fix round 1), corrected in fix round 2. `errors="replace"` is right - refusing to
+    show a body over two bad bytes helps nobody - but silent substitution with no disclosure
+    means `transformations` positively (and wrongly) asserts nothing happened.
+
+    Two cases with DIFFERENT counts, so a hardcoded constant in the implementation would fail
+    at least one of them (fix round 2 finding: one test with one number cannot distinguish a
+    correct computation from a lucky literal):
+
+    - a single stray invalid byte: 1 byte invalid, 1 replacement character in the output - counts
+      agree, so this case alone would not have caught the original bug.
+    - a truncated multi-byte sequence: 2 bytes invalid (verified against `bytes.decode`'s own
+      `UnicodeDecodeError.start`/`.end`) but only 1 replacement character in the output, because
+      `bytes.decode(errors="replace")` collapses a truncated sequence to ONE U+FFFD. This is
+      exactly the case that made `str.count("�")` on the output wrong (fix round 2): that
+      approach would have disclosed "1" here, not the true byte count "2".
+    """
+    single_byte = b"ok \xff done"  # one byte that is not valid UTF-8 on its own
+    m = Mail(FakeBackend(messages={"m1": _msg({
+        "mimeType": "text/plain", "headers": [],
+        "body": {"data": base64.urlsafe_b64encode(single_byte).decode()},
+    })})).read_message("m1")
     assert "�" in m.body_markdown
-    assert any("2" in t and "not valid UTF-8" in t for t in m.transformations)
+    assert _disclosed_replacement_count(m.transformations) == 1
+
+    truncated_sequence = b"abc\xe2\x82"  # a 3-byte sequence missing its final byte
+    m2 = Mail(FakeBackend(messages={"m1": _msg({
+        "mimeType": "text/plain", "headers": [],
+        "body": {"data": base64.urlsafe_b64encode(truncated_sequence).decode()},
+    })})).read_message("m1")
+    assert m2.body_markdown.count("�") == 1  # ONE replacement character in the output...
+    assert _disclosed_replacement_count(m2.transformations) == 2  # ...but TWO bytes were invalid
 
 
 def test_a_backend_that_raises_bare_keyerror_is_still_translated():

@@ -114,41 +114,81 @@ def _decode(body: dict[str, Any]) -> str:
     return base64.urlsafe_b64decode(padded).decode("utf-8", errors="replace")
 
 
+def _count_utf8_replacements(raw: bytes) -> int:
+    """How many BYTES of `raw` are invalid UTF-8 - the bytes `_decode`'s
+    `errors="replace"` silently substitutes with U+FFFD.
+
+    Fix round 2 (CINO 2026-09-26): `str.count("\\ufffd")` on `_decode`'s OUTPUT was tried first
+    and is wrong in both directions, which is worse than the silence it replaced - a precise-
+    sounding wrong number makes a reader confident and wrong, where no number at all only makes
+    them uncertain. It diverges because U+FFFD in the output and "an invalid byte" in the input
+    are not the same thing to count: a truncated multi-byte sequence collapses SEVERAL invalid
+    bytes into ONE replacement character (undercounts), and a body that legitimately contained a
+    real U+FFFD character before decoding would inflate the tally with a byte that was never
+    invalid (overcounts).
+
+    `bytes.decode`'s own `UnicodeDecodeError` carries the true invalid span as
+    `exc.start`/`exc.end` (verified: for `b"abc\\xe2\\x82"`, a truncated 3-byte sequence, the
+    error reports `start=3, end=5` - two bytes - while the "replace"-decoded output holds only
+    one U+FFFD). Looping over that exception here gets the same span a custom `codecs` error
+    handler would see from `exc.start`/`exc.end` - without registering one: `codecs.register_error`
+    is a process-global registry with no unregister call, so a per-call handler name in a
+    long-running server leaks one registration per decoded message, forever, and a module-level
+    handler would still need its own side channel (a contextvar or similar) to get a per-call
+    count back out - more moving parts than a plain loop over `UnicodeDecodeError` needs. This
+    also never builds the decoded text itself (that is `_decode`'s job, via the same bytes) - it
+    only counts, on the same "advance past the invalid span" logic the built-in "replace" handler
+    uses, so the count lines up with what `_decode` actually produced.
+    """
+    remaining = raw
+    replaced = 0
+    while True:
+        try:
+            remaining.decode("utf-8")
+            return replaced
+        except UnicodeDecodeError as exc:
+            replaced += exc.end - exc.start
+            remaining = remaining[exc.end:]
+
+
 def _decode_body_part(body: dict[str, Any], *, label: str) -> tuple[str, list[str]]:
     """Decode one body part's `data` via `_decode`, and disclose (never silently swallow or
     silently substitute) either of the two ways that can go wrong.
 
-    Fix round 1 (CINO 2026-09-26), two findings folded into one wrapper because they are the
-    same failure mode - the body gets altered and the caller cannot tell - at two different
-    points in `_decode`:
-
-    FIX 2 - malformed base64. `data` of a length that cannot be valid base64 (Gmail-stripped
-    padding restores MOST truncated data, but a length that is 1 more than a multiple of 4 is
-    unrecoverable - no amount of `=` padding fixes it) raises `binascii.Error` (a `ValueError`
-    subclass) OUT OF `_decode`, uncaught, past this module's boundary - and at the MCP layer an
+    FIX 2 (fix round 1) - malformed base64. `data` of a length that cannot be valid base64
+    (Gmail-stripped padding restores MOST truncated data, but a length that is 1 more than a
+    multiple of 4 is unrecoverable - no amount of `=` padding fixes it) raises `binascii.Error`
+    OUT OF `_decode`, uncaught, past this module's boundary - and at the MCP layer an
     untranslated exception becomes an opaque `UnexpectedToolError` whose text this project's own
     SDK suppresses, so a user would see nothing but "error executing tool". Caught here instead,
     and NOT re-raised: one corrupt part should not make an otherwise-readable message unreadable
     (a `multipart/alternative` with a mangled `text/plain` and a perfectly good `text/html`
     sibling should still show the html). The caller loses only this one candidate - `label`
     names which message and which part, so the loss is visible rather than merely "no body was
-    found".
+    found". `binascii.Error` IS a `ValueError` subclass and the only exception
+    `base64.urlsafe_b64decode` raises for malformed input, so catching only it (not also
+    `ValueError`) names the one case actually being handled instead of reading as two.
 
-    FIX 3 - invalid UTF-8. `errors="replace"` is the right behaviour for `_decode` to keep -
-    refusing to show a body over two bad bytes helps nobody - but substituting with NO
-    disclosure means `transformations` positively asserts nothing happened when something did,
-    which is worse than an empty `transformations` list: an empty list is a true "nothing to
-    report", a non-empty body with silently substituted bytes is a false one. Counted here
-    (`str.count("\\ufffd")`, the replacement character `errors="replace"` inserts per invalid
-    byte sequence) rather than merely flagged, the same reasoning csa-zendesk's
-    `_untrusted.py` gives for counting neutralised characters instead of a bare flag: a count is
-    what lets a reader judge whether two bytes were mangled or the whole body was.
+    FIX 3 (fix round 2) - invalid UTF-8, counted accurately. `errors="replace"` is the right
+    behaviour for `_decode` to keep - refusing to show a body over two bad bytes helps nobody -
+    but substituting with NO disclosure means `transformations` positively asserts nothing
+    happened when something did. The count comes from `_count_utf8_replacements` over the RAW
+    bytes, not from counting U+FFFD in the already-decoded text (see that function's docstring
+    for why the two numbers differ). Re-deriving `raw` here (rather than changing `_decode`'s
+    signature to also return it) is deliberately redundant but safe: `_decode` just produced
+    `text` from this exact `data` via the same deterministic re-pad-then-decode recipe, so
+    repeating the re-pad-and-b64-decode step cannot raise here when it did not raise above.
     """
     try:
         text = _decode(body)
-    except (binascii.Error, ValueError) as exc:
+    except binascii.Error as exc:
         return "", [f"{label} could not be decoded and was treated as empty: {exc}"]
-    substituted = text.count("�")
+    data = body.get("data")
+    if not data:
+        return text, []
+    padded = data + "=" * (-len(data) % 4)  # same re-padding `_decode` just did, to reach the
+    raw = base64.urlsafe_b64decode(padded)  # raw bytes `_decode` does not expose
+    substituted = _count_utf8_replacements(raw)
     if substituted:
         return text, [f"{substituted} byte(s) in {label} were not valid UTF-8 and were "
                       f"replaced with U+FFFD"]
