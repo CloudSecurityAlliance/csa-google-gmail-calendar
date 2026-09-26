@@ -102,17 +102,23 @@ def test_read_only_posture_has_nothing_to_collapse():
 def test_everything_posture_exact_scope_list():
     """ALL_CAPABILITIES adds MAIL_DELETE (bare mail.google.com) and CALENDAR_DELETE (which
     contributes the same calendar.events already present via CALENDAR_WRITE, so nothing new).
-    mail.google.com is documented as "everything" but is left UNCOLLAPSED against gmail.modify/
-    gmail.send here - that further collapse is a separate judgment call flagged in
-    task-9-report.md, not assumed silently, so this test pins today's actual behaviour."""
+    mail.google.com is Gmail's full-access scope - Google's own consent-screen text for it is
+    "Read, compose, send, and permanently delete all your email from Gmail" - and strictly
+    contains both gmail.modify and gmail.send, so both collapse away here. Four scopes, not
+    six."""
     assert auth.scopes_for(frozenset(policy.ALL_CAPABILITIES)) == [
         "https://mail.google.com/",
         f"{B}calendar.calendarlist.readonly",
         f"{B}calendar.events",
         f"{B}calendar.freebusy",
-        f"{B}gmail.modify",
-        f"{B}gmail.send",
     ]
+
+
+def test_gmail_send_is_absent_from_the_everything_set():
+    """The assertion that would fail if someone later decided mail.google.com should NOT
+    dominate gmail.send: it must not appear beside the scope that already grants it."""
+    assert f"{B}gmail.send" not in auth.scopes_for(frozenset(policy.ALL_CAPABILITIES))
+    assert f"{B}gmail.modify" not in auth.scopes_for(frozenset(policy.ALL_CAPABILITIES))
 
 
 def test_gmail_send_survives_a_naive_rank_only_collapse():

@@ -91,12 +91,22 @@ _CAPABILITY_SCOPES: dict[str, tuple[str, ...]] = {
 # ranked below the highest scope present") would incorrectly drop `gmail.send` whenever
 # `gmail.modify` is also requested. Likewise `calendar.freebusy` ranks below `calendar.events`
 # but is not implied by it — free/busy is a distinct, narrower read than the full event body.
-# So the two facts below are declared, not inferred, and checked against `scopes.RANK` only as
+# So the facts below are declared, not inferred, and checked against `scopes.RANK` only as
 # a sanity bound: the dominant scope must genuinely outrank what it dominates, which would
 # catch a typo'd or swapped pair at import time rather than at a consent screen.
+#
+# Fix round 2: `https://mail.google.com/` (MAIL_DELETE) is Gmail's full-access scope and
+# strictly contains both `gmail.modify` and `gmail.send` — Google's own consent-screen text for
+# it is "Read, compose, send, and permanently delete all your email from Gmail", which already
+# says everything `gmail.modify`/`gmail.send` would say beside it. Only reachable when
+# MAIL_DELETE is enabled (off by default), but the rule applies there exactly as it does to the
+# other two pairs: a subsumption table with a known, deliberately-unhandled case reads as a gap
+# nobody decided rather than a boundary somebody drew, so it is handled rather than left as a
+# documented exception.
 _SUBSUMES: dict[str, tuple[str, ...]] = {
     f"{_BASE}gmail.modify": (f"{_BASE}gmail.readonly",),
     f"{_BASE}calendar.events": (f"{_BASE}calendar.events.readonly",),
+    "https://mail.google.com/": (f"{_BASE}gmail.modify", f"{_BASE}gmail.send"),
 }
 for _dominant, _dominated in _SUBSUMES.items():
     for _d in _dominated:
