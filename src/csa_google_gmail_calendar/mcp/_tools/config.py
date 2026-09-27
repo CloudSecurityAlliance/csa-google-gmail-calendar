@@ -155,6 +155,15 @@ def register_config_tools(app: MCPServer, settings: Settings, flavour: str,
             "client_project": client_project,
             "attachment_directory": attachment_directory,
             "download_directory": download_directory,
+            # WHERE each path came from, not just what it is. Since #23 both directories have
+            # defaults, so "it is set to ~/Downloads" no longer tells an operator whether
+            # anyone chose that - and the remedy differs: an unwanted default is changed by
+            # SETTING the variable, an unwanted explicit value by changing what it is set to.
+            # Same reason `client_project` is reported beside the scopes rather than inferred.
+            "attachment_directory_is_default": (attach_policy is not None
+                                                and attach_policy.from_default),
+            "download_directory_is_default": (download_policy is not None
+                                              and download_policy.from_default),
             "registered_tools": sorted(registered),
             "hidden_by_capability": sorted(set(TOOL_CAPABILITIES) - cap_allowed),
             "hidden_by_flavour": sorted(hidden_by_flavour(flavour, cap_allowed)),
