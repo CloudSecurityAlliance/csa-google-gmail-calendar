@@ -27,3 +27,10 @@ htmlcov/
 
 # OS
 .DS_Store
+
+# uv resolves per-interpreter; this is a library tested across 3.10-3.14 and published to
+# PyPI, so a single pinned resolution is not a thing any consumer wants and not a thing CI
+# should be steered by. `csa-google-workspace` tracks none either. Ignored rather than merely
+# untracked, because it reappears the moment anyone runs `uv run` and `git add -A` sweeps it in
+# (which is exactly how it got committed in #19).
+uv.lock
