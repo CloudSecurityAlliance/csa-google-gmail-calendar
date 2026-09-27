@@ -108,15 +108,27 @@ def _as_tuple(version: str) -> tuple[int, ...] | None:
         return None
 
 
-def latest_on_pypi(url: str = _PYPI_URL, timeout: float = _TIMEOUT_SECONDS) -> str | None:
+def latest_on_pypi(timeout: float = _TIMEOUT_SECONDS) -> str | None:
     """The newest version on PyPI, or `None` if that could not be established.
 
     Every failure is `None` and none of them is raised. This runs to add a courtesy line to a bug
     report: an airgapped machine, a proxy, a DNS failure, a 500 from the index or a JSON shape
     that changed must all cost the reader that one line, never the report and never the tool.
+
+    **The URL is a module constant and deliberately NOT a parameter.** The first draft took one,
+    for testability, and bandit was right to flag it (B310): a caller-supplied URL reaches
+    `urlopen`, which accepts `file://` and every other scheme urllib knows - turning a version
+    check into a file-read primitive. The tests never used the parameter (they patch `urlopen`
+    itself), so it was a hole opened for a convenience nothing wanted. Removed rather than
+    annotated: a `nosec` would have recorded the reasoning without closing the gap.
     """
     try:
-        with urllib.request.urlopen(url, timeout=timeout) as response:  # noqa: S310 - fixed https URL
+        # B310 is about a caller-supplied URL reaching `urlopen`, which would accept `file://`.
+        # `_PYPI_URL` is a module constant with a literal https scheme and nothing can influence
+        # it - the parameter that COULD have was removed rather than annotated, which is what
+        # makes this suppression honest rather than a silenced finding.
+        resp = urllib.request.urlopen(_PYPI_URL, timeout=timeout)  # noqa: S310  # nosec B310
+        with resp as response:
             body = json.load(response)
         version = body["info"]["version"]
     except (urllib.error.URLError, OSError, ValueError, KeyError, TypeError):
