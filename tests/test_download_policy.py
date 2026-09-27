@@ -101,10 +101,27 @@ def test_from_env_reads_the_variable(root, monkeypatch):
     assert p.write("a.txt", b"x").parent == root
 
 
-def test_from_env_with_no_variable_is_a_policy_that_refuses_everything(monkeypatch):
+def test_from_env_with_no_variable_falls_back_to_downloads(tmp_path, monkeypatch):
+    """#23. HOME is redirected at tmp_path so the suite never creates or writes into the real
+    `~/Downloads` - see the sibling test in test_attachment_allowlist.py for what happened the
+    one time it was not."""
     monkeypatch.delenv("CSA_GGC_DOWNLOAD_DIR", raising=False)
-    with pytest.raises(PolicyError, match="CSA_GGC_DOWNLOAD_DIR"):
-        download_policy_from_env().resolve("x.pdf")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+
+    policy = download_policy_from_env()
+
+    assert policy.from_default is True
+    assert policy.root == (tmp_path / "Downloads").resolve()
+    assert policy.root.is_dir()
+
+
+def test_an_explicitly_set_download_directory_that_is_missing_is_still_refused(
+        tmp_path, monkeypatch):
+    monkeypatch.setenv("CSA_GGC_DOWNLOAD_DIR", str(tmp_path / "typo"))
+    with pytest.raises(PolicyError, match="does not exist"):
+        download_policy_from_env()
+    assert not (tmp_path / "typo").exists()
 
 
 # --- check_directories_disjoint -----------------------------------------------------------

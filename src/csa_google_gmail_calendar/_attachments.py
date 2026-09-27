@@ -92,6 +92,30 @@ from .exceptions import PolicyError
 
 ENV_VAR = "CSA_GGC_ATTACH_DIR"
 
+# The two defaults, and why they are not the same directory (#23).
+#
+# `~/Downloads` for the WRITE side because that is what the directory is for on every platform
+# this ships to, and because `csa-google-workspace` already defaults `CSA_GW_EXPORT_DIR` there
+# for the same "a program gave me a file" reason - discoverable in the Finder/Explorer sidebar,
+# persistent, and somewhere nobody keeps precious unique files.
+#
+# The READ side deliberately does NOT default to `~/Downloads`, and could not: the two roots
+# must be disjoint (`check_directories_disjoint`) or the server refuses to start, so defaulting
+# both there would make a fresh install unable to run at all. The deeper reason is the one that
+# check exists for - a stranger emails a file, it lands in Downloads, and it is now inside the
+# root `send_message` attaches from. Shipping that as a DEFAULT would be worse than shipping it
+# as a footgun, because nobody would have chosen it.
+#
+# So the send-side default is a CSA-specific directory that incoming mail never writes to. It is
+# empty until a person puts something in it, which is precisely the property that makes it safe
+# to read from by default.
+#
+# `~/Documents` may be OneDrive-redirected on a managed Windows machine. That still resolves to
+# a real directory, so the default works; it does mean an outbox can sync, which the README
+# says rather than leaving to be discovered.
+DEFAULT_ATTACH_DIR = "~/Documents/CSA-Outbox"
+DEFAULT_DOWNLOAD_DIR = "~/Downloads"
+
 # A refused path is echoed into the exception message so the caller can see what was rejected.
 # The caller's string is untrusted and unbounded (it may come from a model), and exception
 # messages tend to end up in logs, so what gets echoed is capped rather than reproduced whole.
@@ -104,8 +128,43 @@ def _echo(path: str) -> str:
     return f"{path[:_MAX_ECHO]!r}... ({len(path)} chars, truncated)"
 
 
+def _create_default_root(resolved_root: pathlib.Path, var: str) -> None:
+    """Create a DEFAULTED root, or explain why the default cannot be used.
+
+    Only ever called for a path this project chose. `parents=True` because both defaults sit one
+    level below a home directory that may itself be unusual (a redirected `~/Documents`, a home
+    on a volume that is not mounted yet), and `exist_ok=True` because two servers starting at
+    once is ordinary rather than an error.
+
+    A failure here is NOT fatal-by-exception on its own: it falls through to the `is_dir()` check
+    below, which raises the same actionable message an explicitly-configured bad path gets. The
+    message names the variable, so the remedy - set it somewhere writable - is the one the reader
+    needs, whether they had set it or not.
+    """
+    try:
+        resolved_root.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise PolicyError(
+            f"the default directory for {var} ({resolved_root}) does not exist and could not "
+            f"be created: {exc}. Set {var} to a directory this server may use instead.") from exc
+
+
 class AttachmentPolicy:
-    def __init__(self, root: str | None) -> None:
+    def __init__(self, root: str | None, *, from_default: bool = False) -> None:
+        """`from_default=True` marks a root this project chose rather than one an operator set.
+
+        It changes exactly two things, and both follow from that distinction:
+
+        - **A missing directory is created rather than refused.** An explicitly configured root
+          that does not exist is a typo, and failing loudly at startup is the whole point of
+          checking here rather than on first use. A DEFAULT that does not exist is just a first
+          run on a machine where nobody has made the directory yet, and failing a user for a
+          path they never chose would make the default worse than no default.
+        - **It is reported as the default**, by `describe_configuration` and by the disjointness
+          refusal, so a message naming two directories says which of them the reader actually
+          chose.
+        """
+        self.from_default = from_default
         if not root:
             self.root: pathlib.Path | None = None
             return
@@ -125,6 +184,8 @@ class AttachmentPolicy:
         except ValueError as exc:
             raise PolicyError(f"{ENV_VAR} is set to {_echo(root)}, which is not a valid path: "
                                f"{exc}") from exc
+        if from_default and not resolved_root.exists():
+            _create_default_root(resolved_root, ENV_VAR)
         if not resolved_root.is_dir():
             kind = "does not exist" if not resolved_root.exists() else "is not a directory"
             raise PolicyError(
@@ -171,7 +232,17 @@ class AttachmentPolicy:
 
 
 def from_env() -> AttachmentPolicy:
-    return AttachmentPolicy(os.environ.get(ENV_VAR) or None)
+    """`CSA_GGC_ATTACH_DIR` if set, else `DEFAULT_ATTACH_DIR`.
+
+    The env var still wins, and setting it to a path that does not exist still fails loudly -
+    the default only covers the case where nobody has said anything. Before #23 an unset variable
+    meant "sending attachments is off", which is a defensible fail-closed posture that had the
+    practical effect of nobody ever using the feature.
+    """
+    configured = os.environ.get(ENV_VAR) or None
+    if configured:
+        return AttachmentPolicy(configured)
+    return AttachmentPolicy(DEFAULT_ATTACH_DIR, from_default=True)
 
 
 DOWNLOAD_ENV_VAR = "CSA_GGC_DOWNLOAD_DIR"
@@ -191,7 +262,9 @@ class DownloadPolicy:
     happens to be.
     """
 
-    def __init__(self, root: str | None) -> None:
+    def __init__(self, root: str | None, *, from_default: bool = False) -> None:
+        """`from_default` carries the same meaning as on `AttachmentPolicy` - see there."""
+        self.from_default = from_default
         if not root:
             self.root: pathlib.Path | None = None
             return
@@ -200,6 +273,8 @@ class DownloadPolicy:
         except ValueError as exc:
             raise PolicyError(f"{DOWNLOAD_ENV_VAR} is set to {_echo(root)}, which is not a "
                                f"valid path: {exc}") from exc
+        if from_default and not resolved_root.exists():
+            _create_default_root(resolved_root, DOWNLOAD_ENV_VAR)
         if not resolved_root.is_dir():
             kind = "does not exist" if not resolved_root.exists() else "is not a directory"
             raise PolicyError(
@@ -257,7 +332,22 @@ class DownloadPolicy:
 
 
 def download_policy_from_env() -> DownloadPolicy:
-    return DownloadPolicy(os.environ.get(DOWNLOAD_ENV_VAR) or None)
+    """`CSA_GGC_DOWNLOAD_DIR` if set, else `DEFAULT_DOWNLOAD_DIR` (`~/Downloads`)."""
+    configured = os.environ.get(DOWNLOAD_ENV_VAR) or None
+    if configured:
+        return DownloadPolicy(configured)
+    return DownloadPolicy(DEFAULT_DOWNLOAD_DIR, from_default=True)
+
+
+def _describe_root(policy: AttachmentPolicy | DownloadPolicy, var: str) -> str:
+    """`CSA_GGC_X (/path)` for a configured root, `the default for CSA_GGC_X (/path)` otherwise.
+
+    A refusal that names two directories is only actionable if the reader can tell which one
+    they set. When the answer is "neither", the phrasing has to say so - otherwise the remedy
+    looks like changing a variable that is not set.
+    """
+    where = "the default for " if policy.from_default else ""
+    return f"{where}{var} ({policy.root})"
 
 
 def check_directories_disjoint(attach_policy: AttachmentPolicy | None,
@@ -297,9 +387,15 @@ def check_directories_disjoint(attach_policy: AttachmentPolicy | None,
     attach_root, download_root = attach_policy.root, download_policy.root
     if attach_root is None or download_root is None:
         return
+    # Once both sides have defaults (#23), a collision can involve a directory the reader never
+    # chose: `CSA_GGC_DOWNLOAD_DIR=~/Documents` collides with the DEFAULT attach root nested
+    # inside it, and a message naming two paths would leave them hunting for a second variable
+    # they never set. Saying which is which is the actionable half.
+    a = _describe_root(attach_policy, ENV_VAR)
+    d = _describe_root(download_policy, DOWNLOAD_ENV_VAR)
     if attach_root.is_relative_to(download_root) or download_root.is_relative_to(attach_root):
         raise PolicyError(
-            f"{ENV_VAR} ({attach_root}) and {DOWNLOAD_ENV_VAR} ({download_root}) must not be "
+            f"{a} and {d} must not be "
             f"the same directory, or nested inside one another. The directory outgoing mail "
             f"reads attachments from and the directory get_attachment writes downloaded "
             f"attachments to must be disjoint - otherwise anything a stranger sends could "
@@ -309,13 +405,13 @@ def check_directories_disjoint(attach_policy: AttachmentPolicy | None,
         same = os.path.samefile(attach_root, download_root)
     except OSError as exc:
         raise PolicyError(
-            f"could not confirm {ENV_VAR} ({attach_root}) and {DOWNLOAD_ENV_VAR} "
-            f"({download_root}) are different directories: {exc}. Refused rather than "
+            f"could not confirm {a} and {d} "
+            f"are different directories: {exc}. Refused rather than "
             f"assumed disjoint - a directory this check cannot stat is not one it can prove "
             f"safe.") from exc
     if same:
         raise PolicyError(
-            f"{ENV_VAR} ({attach_root}) and {DOWNLOAD_ENV_VAR} ({download_root}) name the "
+            f"{a} and {d} name the "
             f"same directory (confirmed by device/inode, not just by spelling - e.g. two "
             f"names that differ only in case on a case-insensitive filesystem still land "
             f"here). The directory outgoing mail reads attachments from and the directory "

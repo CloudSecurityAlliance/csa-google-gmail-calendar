@@ -116,9 +116,10 @@ environment:
                            none                          nothing enabled
   CSA_GGC_CLIENT_SECRETS OAuth client secrets JSON (`login`/`authenticate` only; defaults to
                          ~/.csa_google_gmail_calendar/client_secret.json if that exists)
-  CSA_GGC_ATTACH_DIR     directory outgoing mail may attach files from (unset: attachments off)
-  CSA_GGC_DOWNLOAD_DIR   directory get_attachment writes downloaded attachments to (unset:
-                         downloads off). Must NOT be CSA_GGC_ATTACH_DIR, or a directory nested
+  CSA_GGC_ATTACH_DIR     directory outgoing mail may attach files from
+                         (default: ~/Documents/CSA-Outbox, created if missing)
+  CSA_GGC_DOWNLOAD_DIR   directory get_attachment writes downloaded attachments to
+                         (default: ~/Downloads). Must NOT be CSA_GGC_ATTACH_DIR, or a directory nested
                          inside/around it - the server refuses to start if they overlap, since
                          a stranger's downloaded attachment landing in the directory outgoing
                          mail reads from is exactly the bug this separation closes.

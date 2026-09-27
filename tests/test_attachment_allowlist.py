@@ -86,10 +86,33 @@ def test_from_env_reads_the_variable(root, monkeypatch):
     assert from_env().resolve("ok.pdf").name == "ok.pdf"
 
 
-def test_from_env_with_no_variable_is_a_policy_that_refuses_everything(monkeypatch):
+def test_from_env_with_no_variable_falls_back_to_the_default(tmp_path, monkeypatch):
+    """#23 changed this: an unset variable used to mean "sending attachments is off". That was
+    a defensible fail-closed posture whose practical effect was that nobody used the feature.
+
+    **HOME is redirected at tmp_path**, and must stay that way. `from_env()` now CREATES a
+    missing default root, so a test that let it see the real home would make a directory in the
+    developer's `~/Documents` as a side effect of running the suite - which it did, once, before
+    this was written."""
     monkeypatch.delenv("CSA_GGC_ATTACH_DIR", raising=False)
-    with pytest.raises(PolicyError, match="CSA_GGC_ATTACH_DIR"):
-        from_env().resolve("x.pdf")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))   # expanduser's Windows source
+
+    policy = from_env()
+
+    assert policy.from_default is True
+    assert policy.root == (tmp_path / "Documents" / "CSA-Outbox").resolve()
+    assert policy.root.is_dir(), "a defaulted root that does not exist is created, not refused"
+
+
+def test_an_explicitly_set_directory_that_is_missing_is_still_refused(tmp_path, monkeypatch):
+    """The half that must NOT change. Creating a missing root is a concession to a path the
+    operator never chose; a path they DID choose and got wrong must still fail loudly at
+    startup, which is the entire reason this is checked at construction."""
+    monkeypatch.setenv("CSA_GGC_ATTACH_DIR", str(tmp_path / "typo"))
+    with pytest.raises(PolicyError, match="does not exist"):
+        from_env()
+    assert not (tmp_path / "typo").exists(), "an explicit root must never be created"
 
 
 def test_read_returns_bytes_and_the_basename(root):

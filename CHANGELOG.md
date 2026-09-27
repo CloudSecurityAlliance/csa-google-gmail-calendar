@@ -3,6 +3,62 @@
 All notable changes to this project are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.2.0] - 2026-09-26
+
+### Changed
+
+- **Both attachment directories now have defaults, so attachments work on a fresh install.**
+  Previously `CSA_GGC_ATTACH_DIR` and `CSA_GGC_DOWNLOAD_DIR` were unset by default, which meant
+  both halves of the feature were off. That is spec §3's default posture applied to the
+  filesystem and it is defensible; its practical effect was that nobody used attachments.
+
+  | variable | default |
+  |---|---|
+  | `CSA_GGC_DOWNLOAD_DIR` | `~/Downloads` |
+  | `CSA_GGC_ATTACH_DIR` | `~/Documents/CSA-Outbox` |
+
+  **They are two different directories on purpose, and could not be one.**
+  `check_directories_disjoint` refuses at server construction when the two roots are the same or
+  one nests in the other, so defaulting both to `~/Downloads` would stop the server starting.
+  The reason behind that check applies harder to a default than to a misconfiguration: a
+  stranger emails you a file, you save it, and it is now inside the root `send_message` attaches
+  from. Shipping that as the default would be worse than shipping it as a footgun, because
+  nobody would have chosen it. So the send-side default is a CSA-specific directory that
+  incoming mail never writes to - empty until a person puts something in it, which is exactly
+  the property that makes it safe to read from by default. ([#23](https://github.com/CloudSecurityAlliance/csa-google-gmail-calendar/issues/23))
+
+- **A defaulted root that does not exist is created; an explicitly configured one still is
+  not.** The existing behaviour - refuse a missing root at construction, so a typo fails loudly
+  at startup rather than as "file not found" on the first call - is kept exactly for paths an
+  operator set. A path *this project* picked is different: absence just means first run, and
+  failing someone over a directory they never chose would make the default worse than none.
+
+- **The disjointness refusal now says which path you chose.** With defaults on both sides, a
+  collision can involve a directory the reader never set (`CSA_GGC_DOWNLOAD_DIR=~/Documents`
+  collides with the default attach root nested inside it). The message distinguishes
+  `CSA_GGC_ATTACH_DIR (...)` from `the default for CSA_GGC_ATTACH_DIR (...)`, because otherwise
+  the remedy looks like changing a variable that is not in the environment.
+
+### Added
+
+- `describe_configuration` reports `attachment_directory_is_default` and
+  `download_directory_is_default`. Same reasoning as `client_project`: an operator should not
+  have to infer which configuration is live, and the remedy differs - an unwanted default is
+  changed by *setting* the variable, an unwanted explicit value by changing what it is set to.
+
+- `tests/conftest.py` redirects `HOME`/`USERPROFILE` to a temporary directory for every test.
+  Found the hard way: because a defaulted root is created, `cli.main([])` in `test_mcp_cli.py`
+  went down the serve path and made `~/Documents/CSA-Outbox` **on the machine running the
+  suite**. Per-test redirection would work and would have to be remembered by every future test
+  touching the serve path, the config defaults or the token cache - so it is done once, for
+  everything.
+
+### Notes
+
+On a managed Windows machine `~/Documents` may be OneDrive-redirected. The default still
+resolves to a real directory, so it works; it does mean an outbox can sync, which the README now
+says rather than leaving to be discovered.
+
 ## [0.1.1] - 2026-09-26
 
 ### Fixed
