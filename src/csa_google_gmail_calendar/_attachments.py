@@ -141,7 +141,8 @@ def _echo(path: str) -> str:
 # deliberate act that says "outgoing attachments, from here". The safer direction is the one
 # that requires the gesture.
 _MISSING_DEFAULT = ("the default directory for {var} ({path}) does not exist, so {what} is off. "
-                    "Create that directory, or set {var} to one that exists.")
+                    "Create that directory - it takes effect on the next call, no restart - or "
+                    "set {var} to one that exists.")
 
 
 class AttachmentPolicy:
@@ -165,6 +166,13 @@ class AttachmentPolicy:
         # Set on every path so callers never have to guard the attribute's existence; non-None
         # only for a default that could not be used.
         self.warning: str | None = None
+        # A defaulted root that was absent at construction, re-checked on use. `None` whenever
+        # there is nothing to re-check: an explicit root, or one that was already there.
+        self._pending: pathlib.Path | None = None
+        # The other direction, set by `check_directories_disjoint` - the one place both are ever
+        # in hand. Needed because adopting a root late has to re-ask the question that function
+        # answers, and a policy cannot otherwise see its counterpart.
+        self._sibling: AttachmentPolicy | DownloadPolicy | None = None
         if not root:
             self.root: pathlib.Path | None = None
             return
@@ -189,7 +197,14 @@ class AttachmentPolicy:
             if from_default:
                 # Not an error: nobody asked for this path, so it must not stop the server or
                 # the OTHER direction, which may be configured perfectly well.
+                #
+                # `_pending` keeps the path so `_adopt_pending_default` can look again when a
+                # tool actually needs it. The decision is deliberately NOT frozen here: the
+                # directory is the documented remedy, and a server that cached "absent" would
+                # keep refusing after somebody followed its own instructions, telling them to
+                # create a directory that now exists. Nothing is created either way.
                 self.root = None
+                self._pending = resolved_root
                 self.warning = _MISSING_DEFAULT.format(
                     var=ENV_VAR, path=resolved_root,
                     what="attaching a local file to outgoing mail")
@@ -200,6 +215,8 @@ class AttachmentPolicy:
         self.root = resolved_root
 
     def resolve(self, path: str) -> pathlib.Path:
+        if self.root is None:
+            _adopt_pending_default(self, ENV_VAR)
         if self.root is None:
             # "nothing is configured" would be false when a default exists and simply is not
             # there - and it sends the reader to set a variable when making a directory is the
@@ -276,6 +293,13 @@ class DownloadPolicy:
         """`from_default` carries the same meaning as on `AttachmentPolicy` - see there."""
         self.from_default = from_default
         self.warning: str | None = None
+        # A defaulted root that was absent at construction, re-checked on use. `None` whenever
+        # there is nothing to re-check: an explicit root, or one that was already there.
+        self._pending: pathlib.Path | None = None
+        # The other direction, set by `check_directories_disjoint` - the one place both are ever
+        # in hand. Needed because adopting a root late has to re-ask the question that function
+        # answers, and a policy cannot otherwise see its counterpart.
+        self._sibling: AttachmentPolicy | DownloadPolicy | None = None
         if not root:
             self.root: pathlib.Path | None = None
             return
@@ -287,7 +311,16 @@ class DownloadPolicy:
         if not resolved_root.is_dir():
             kind = "does not exist" if not resolved_root.exists() else "is not a directory"
             if from_default:
+                # Not an error: nobody asked for this path, so it must not stop the server or
+                # the OTHER direction, which may be configured perfectly well.
+                #
+                # `_pending` keeps the path so `_adopt_pending_default` can look again when a
+                # tool actually needs it. The decision is deliberately NOT frozen here: the
+                # directory is the documented remedy, and a server that cached "absent" would
+                # keep refusing after somebody followed its own instructions, telling them to
+                # create a directory that now exists. Nothing is created either way.
                 self.root = None
+                self._pending = resolved_root
                 self.warning = _MISSING_DEFAULT.format(
                     var=DOWNLOAD_ENV_VAR, path=resolved_root,
                     what="saving an incoming attachment")
@@ -307,6 +340,8 @@ class DownloadPolicy:
         message a stranger wrote. An absolute path or a `..` segment is refused outright rather
         than silently reinterpreted, which is exactly wrong for a value nobody trustworthy
         chose."""
+        if self.root is None:
+            _adopt_pending_default(self, DOWNLOAD_ENV_VAR)
         if self.root is None:
             raise PolicyError(
                 self.warning or
@@ -355,6 +390,60 @@ def download_policy_from_env() -> DownloadPolicy:
     return DownloadPolicy(DEFAULT_DOWNLOAD_DIR, from_default=True)
 
 
+def _adopt_pending_default(policy: AttachmentPolicy | DownloadPolicy, var: str) -> None:
+    """Look again at a defaulted directory that was missing at construction.
+
+    Called from `resolve()`, so `mkdir ~/Documents/CSA-Outbox` takes effect on the next tool
+    call rather than on the next restart. Without this the server cached "absent" for its whole
+    lifetime and went on refusing after somebody did exactly what it told them to, which is a
+    worse failure than the original absence - the remedy appears not to work.
+
+    Still creates nothing. This only notices.
+
+    **Disjointness is re-asked here, not assumed.** The startup check ran when this root did not
+    exist, so it proved nothing about it. A directory appearing later can collide with the other
+    side - `CSA_GGC_DOWNLOAD_DIR=~/Documents` with the default outbox nested inside it is the
+    ordinary way that happens - and adopting without checking would reopen the exact hole
+    `check_directories_disjoint` exists to close, just later and more quietly.
+    """
+    pending = policy._pending
+    if pending is None or not pending.is_dir():
+        return
+    sibling = policy._sibling
+    if sibling is not None and sibling.root is not None:
+        try:
+            overlap = _roots_overlap(pending, sibling.root)
+        except OSError:
+            return                      # cannot prove it safe, so do not adopt it
+        if overlap is not None:
+            policy.warning = (
+                f"{pending} now exists, but it is the same directory as - or nested with - the "
+                f"one the other direction uses ({sibling.root}), so it cannot be adopted. "
+                f"Set {var} to a directory that is separate from it.")
+            return
+    policy.root = pending
+    policy._pending = None
+    policy.warning = None
+
+
+def _roots_overlap(a: pathlib.Path, b: pathlib.Path) -> str | None:
+    """`"nested"`, `"same"`, or `None`. Raises `OSError` if either path cannot be stat'd.
+
+    Factored out so the startup check and the late-adoption check in `_adopt_pending_default`
+    cannot drift. They ask the identical question - may these two directories coexist - and a
+    second hand-written copy of `is_relative_to` plus `samefile` is exactly how the case-variant
+    hole got into the shell script that mirrors this.
+
+    Nesting is tested first and separately because `samefile` does not subsume it: a parent and
+    its child are genuinely different inodes, so no identity test would ever flag that pair.
+    """
+    if a.is_relative_to(b) or b.is_relative_to(a):
+        return "nested"
+    if os.path.samefile(a, b):
+        return "same"
+    return None
+
+
 def _describe_root(policy: AttachmentPolicy | DownloadPolicy, var: str) -> str:
     """`CSA_GGC_X (/path)` for a configured root, `the default for CSA_GGC_X (/path)` otherwise.
 
@@ -400,6 +489,10 @@ def check_directories_disjoint(attach_policy: AttachmentPolicy | None,
     """
     if attach_policy is None or download_policy is None:
         return
+    # The one place both are in hand. Late adoption needs to re-ask this question and cannot
+    # otherwise reach its counterpart.
+    attach_policy._sibling = download_policy
+    download_policy._sibling = attach_policy
     attach_root, download_root = attach_policy.root, download_policy.root
     if attach_root is None or download_root is None:
         return
@@ -409,7 +502,20 @@ def check_directories_disjoint(attach_policy: AttachmentPolicy | None,
     # they never set. Saying which is which is the actionable half.
     a = _describe_root(attach_policy, ENV_VAR)
     d = _describe_root(download_policy, DOWNLOAD_ENV_VAR)
-    if attach_root.is_relative_to(download_root) or download_root.is_relative_to(attach_root):
+    # ONE guarded call. The first refactor of this ran the test twice - once outside the `try`
+    # for nesting and once inside it for identity - which moved the `samefile` stat out from
+    # under the handler, so a directory that vanished between construction and here escaped as a
+    # bare OSError instead of the refusal this function promises. The existing test for that
+    # caught it.
+    try:
+        overlap = _roots_overlap(attach_root, download_root)
+    except OSError as exc:
+        raise PolicyError(
+            f"could not confirm {a} and {d} "
+            f"are different directories: {exc}. Refused rather than "
+            f"assumed disjoint - a directory this check cannot stat is not one it can prove "
+            f"safe.") from exc
+    if overlap == "nested":
         raise PolicyError(
             f"{a} and {d} must not be "
             f"the same directory, or nested inside one another. The directory outgoing mail "
@@ -417,15 +523,7 @@ def check_directories_disjoint(attach_policy: AttachmentPolicy | None,
             f"attachments to must be disjoint - otherwise anything a stranger sends could "
             f"overwrite, or later be picked up as, a file the user meant to send. Configure "
             f"them to point at two separate directories.")
-    try:
-        same = os.path.samefile(attach_root, download_root)
-    except OSError as exc:
-        raise PolicyError(
-            f"could not confirm {a} and {d} "
-            f"are different directories: {exc}. Refused rather than "
-            f"assumed disjoint - a directory this check cannot stat is not one it can prove "
-            f"safe.") from exc
-    if same:
+    if overlap == "same":
         raise PolicyError(
             f"{a} and {d} name the "
             f"same directory (confirmed by device/inode, not just by spelling - e.g. two "

@@ -3,6 +3,45 @@
 All notable changes to this project are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.4.0] - 2026-09-27
+
+### Changed
+
+- **Creating a default directory now takes effect on the next call, with no restart.**
+
+  The attachment policies are built once, when the server starts, and the same object is handed
+  to every tool. So a default that was absent at startup stayed absent for the whole process
+  lifetime - and the server went on refusing *after somebody did exactly what it told them to*,
+  with a message naming a directory that by then existed. That is a worse failure than the
+  original absence, because the remedy appears not to work.
+
+  A defaulted root that was missing is now re-checked when a tool actually needs it. `mkdir
+  ~/Documents/CSA-Outbox` and the next `send_message(attachments=[...])` works.
+
+  **Still creates nothing.** This only looks again. An explicitly configured directory that does
+  not exist still raises at construction, unchanged - that is a typo, and failing loudly at
+  startup is the whole reason the check lives there.
+
+- **Disjointness is re-asked when a directory is adopted late**, not assumed. The startup check
+  ran while that root did not exist, so it proved nothing about it. A directory appearing later
+  can collide with the other side - `CSA_GGC_DOWNLOAD_DIR=~/Documents` with the default outbox
+  nested inside it is the ordinary way that happens - and adopting without checking would reopen
+  the exact hole `check_directories_disjoint` exists to close, just later and more quietly. A
+  colliding late directory is refused and says why; a pair that cannot be stat'd is not adopted,
+  on the same "cannot prove it safe" rule the startup check already holds.
+
+### Internal
+
+- The overlap test is factored into one `_roots_overlap` used by both the startup check and late
+  adoption, so the two cannot drift. They ask an identical question, and a second hand-written
+  copy of `is_relative_to` plus `samefile` is precisely how a case-variant hole got into the
+  shell script that mirrors this logic.
+
+  Refactoring it introduced and then caught a real regression: running the test twice - once
+  outside the `try` for nesting, once inside it for identity - moved the `samefile` stat out from
+  under its handler, so a directory that vanished mid-check escaped as a bare `OSError` instead
+  of the refusal this function promises. The existing test for that case failed immediately.
+
 ## [0.3.0] - 2026-09-26
 
 ### Changed
