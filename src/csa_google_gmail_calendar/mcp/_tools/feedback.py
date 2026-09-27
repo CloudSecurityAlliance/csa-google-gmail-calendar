@@ -25,8 +25,6 @@ from __future__ import annotations
 
 import importlib.metadata
 import os
-import platform
-import sys
 import urllib.parse
 from typing import Any
 
@@ -34,6 +32,7 @@ from mcp.server import MCPServer
 
 from ... import __version__
 from .._config import Settings
+from .._environment import describe_environment
 from ._base import LOCAL_READ, tool
 
 ISSUES_URL = "https://github.com/CloudSecurityAlliance/csa-google-gmail-calendar/issues"
@@ -76,21 +75,37 @@ def register_feedback_tools(app: MCPServer, settings: Settings, flavour: str) ->
         putting a real reference to someone's mailbox or calendar into a public tracker."""
         authorized = os.path.exists(settings.token_path)
         capabilities = sorted(settings.policy.enabled)
+        # The one network call this server makes that is not to Google, and the only caller that
+        # asks for it - see `_environment`'s module docstring for why it lives here rather than
+        # at startup or on every error.
+        env = describe_environment(check_pypi=True)
+
+        version_line = env.server_version
+        if env.is_outdated:
+            version_line += f"  ** OUT OF DATE - PyPI has {env.latest_version} **"
+        elif env.latest_version is not None:
+            version_line += "  (latest)"
+        else:
+            version_line += "  (could not check PyPI)"
 
         report = "\n".join([
             "### Environment",
             "",
             "```",
-            f"{'Server version'.ljust(20)}{__version__}",
-            f"{'Python'.ljust(20)}{sys.version.split()[0]}",
-            f"{'OS'.ljust(20)}{platform.system()} {platform.release()}",
-            f"{'Architecture'.ljust(20)}{platform.machine()}",
+            f"{'Server version'.ljust(20)}{version_line}",
+            f"{'Installed via'.ljust(20)}{env.installed_via}",
+            f"{'Python'.ljust(20)}{env.python_version} ({env.python_implementation})",
+            f"{'OS'.ljust(20)}{env.os}",
+            f"{'Architecture'.ljust(20)}{env.architecture}",
             f"{'MCP SDK'.ljust(20)}{_mcp_sdk_version() or 'unknown'}",
             f"{'Flavour'.ljust(20)}{flavour}",
             f"{'Capabilities'.ljust(20)}{', '.join(capabilities) or 'none'}",
             f"{'Authorized'.ljust(20)}{authorized}",
             "```",
             "",
+            *([""] if not env.notes else []),
+            *(f"> {note}" for note in env.notes),
+            *([""] if env.notes else []),
             "### What happened",
             "",
             "<!-- What you did, what you expected, what happened instead. Include the tool",
@@ -103,10 +118,18 @@ def register_feedback_tools(app: MCPServer, settings: Settings, flavour: str) ->
             "report": report,
             "issues_url": ISSUES_URL,
             "new_issue_url": f"{ISSUES_URL}/new?{query}",
-            "server_version": __version__,
-            "python_version": sys.version.split()[0],
-            "os": f"{platform.system()} {platform.release()}",
-            "architecture": platform.machine(),
+            "server_version": env.server_version,
+            # Reported separately from `report` so a caller can ACT on it rather than parse prose.
+            # `is_outdated` is None when PyPI could not be reached - not False, which a reader
+            # would take as "you are current".
+            "latest_version": env.latest_version,
+            "is_outdated": env.is_outdated,
+            "upgrade_command": env.upgrade_command,
+            "installed_via": env.installed_via,
+            "notes": env.notes,
+            "python_version": env.python_version,
+            "os": env.os,
+            "architecture": env.architecture,
             "mcp_sdk_version": _mcp_sdk_version(),
             "flavour": flavour,
             "capabilities_enabled": capabilities,
