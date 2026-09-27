@@ -142,3 +142,114 @@ class TestTheDisjointnessRefusalSaysWhichPathYouChose:
             check_directories_disjoint(AttachmentPolicy(str(child), from_default=True),
                                        DownloadPolicy(str(parent)))
         assert "the default for CSA_GGC_ATTACH_DIR" in str(ei.value)
+
+
+class TestADefaultDirectoryCreatedLaterIsNoticed:
+    """`mkdir` is the documented remedy, so it has to actually work (#26).
+
+    The policy is built once, at server startup, and handed to every tool. Caching "absent" for
+    the process lifetime meant the server went on refusing after somebody did exactly what it
+    told them to - which is worse than the original absence, because the remedy appears broken
+    and the message keeps naming a directory that now exists. Nothing is created here; this only
+    looks again.
+    """
+
+    def test_it_is_adopted_on_the_next_call_without_a_restart(self, tmp_path):
+        outbox = tmp_path / "Documents" / "CSA-Outbox"
+        policy = AttachmentPolicy(str(outbox), from_default=True)
+        assert policy.root is None
+        with pytest.raises(PolicyError, match="does not exist"):
+            policy.resolve("x.pdf")
+
+        outbox.mkdir(parents=True)                      # the user follows the instruction
+        (outbox / "x.pdf").write_bytes(b"hi")
+
+        assert policy.resolve("x.pdf") == (outbox / "x.pdf").resolve()
+        assert policy.warning is None, "the stale warning must be cleared, not just bypassed"
+
+    def test_looking_again_still_creates_nothing(self, tmp_path):
+        policy = AttachmentPolicy(str(tmp_path / "never"), from_default=True)
+        with pytest.raises(PolicyError):
+            policy.resolve("x.pdf")
+        assert not (tmp_path / "never").exists()
+
+    def test_the_download_side_behaves_the_same(self, tmp_path):
+        downloads = tmp_path / "Downloads"
+        policy = DownloadPolicy(str(downloads), from_default=True)
+        with pytest.raises(PolicyError, match="does not exist"):
+            policy.resolve("a.txt")
+
+        downloads.mkdir()
+
+        assert policy.resolve("a.txt") == (downloads / "a.txt").resolve()
+
+
+class TestALateDirectoryMustStillBeDisjoint:
+    """The startup check ran when this root did not exist, so it proved nothing about it.
+
+    Adopting without re-asking would reopen the hole `check_directories_disjoint` exists to
+    close - just later, and more quietly, because no configuration changed to prompt a re-read.
+    """
+
+    def test_a_late_directory_nested_in_the_other_root_is_refused(self, tmp_path):
+        documents = tmp_path / "Documents"
+        documents.mkdir()
+        download = DownloadPolicy(str(documents))               # explicit, exists
+        attach = AttachmentPolicy(str(documents / "CSA-Outbox"), from_default=True)
+
+        check_directories_disjoint(attach, download)            # passes: attach root is None
+        assert attach.root is None
+
+        (documents / "CSA-Outbox").mkdir()                      # appears, nested inside
+
+        with pytest.raises(PolicyError, match="nested"):
+            attach.resolve("x.pdf")
+        assert attach.root is None, "a colliding directory must not be adopted"
+
+    def test_a_late_directory_that_is_disjoint_is_adopted(self, tmp_path):
+        """The other half - otherwise the test above would pass on a policy that adopts
+        nothing at all, which is the shape of a check that cannot fail."""
+        downloads = tmp_path / "Downloads"
+        outbox = tmp_path / "Outbox"
+        downloads.mkdir()
+        download = DownloadPolicy(str(downloads))
+        attach = AttachmentPolicy(str(outbox), from_default=True)
+        check_directories_disjoint(attach, download)
+
+        outbox.mkdir()
+        (outbox / "x.pdf").write_bytes(b"hi")
+
+        assert attach.resolve("x.pdf") == (outbox / "x.pdf").resolve()
+
+    def test_without_a_sibling_it_still_adopts(self, tmp_path):
+        """A policy built outside `create_server` has no counterpart wired, and must not be
+        stuck off forever because of a check it has nothing to run against."""
+        outbox = tmp_path / "Outbox"
+        policy = AttachmentPolicy(str(outbox), from_default=True)
+        assert policy._sibling is None
+        outbox.mkdir()
+        (outbox / "x.pdf").write_bytes(b"hi")
+        assert policy.resolve("x.pdf") == (outbox / "x.pdf").resolve()
+
+    def test_an_unstattable_sibling_means_do_not_adopt(self, tmp_path, monkeypatch):
+        """Same rule the startup check holds: a pair this cannot prove disjoint is not one it
+        may call safe. Failing open here would be the permissive reading of exactly the
+        condition the check exists for."""
+        downloads = tmp_path / "Downloads"
+        outbox = tmp_path / "Outbox"
+        downloads.mkdir()
+        download = DownloadPolicy(str(downloads))
+        # The outbox must NOT exist yet, or there is nothing pending and this exercises nothing.
+        attach = AttachmentPolicy(str(outbox), from_default=True)
+        check_directories_disjoint(attach, download)
+        assert attach.root is None and attach._pending is not None
+
+        outbox.mkdir()                      # appears, and would otherwise be adopted
+
+        def boom(*a, **kw):
+            raise OSError("vanished")
+        monkeypatch.setattr("csa_google_gmail_calendar._attachments.os.path.samefile", boom)
+
+        with pytest.raises(PolicyError):
+            attach.resolve("x.pdf")
+        assert attach.root is None
