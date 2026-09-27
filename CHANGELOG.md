@@ -3,6 +3,30 @@
 All notable changes to this project are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.1.1] - 2026-09-26
+
+### Fixed
+
+- **`authenticate` could not be called at all.** It is the only tool here with a `Context`
+  parameter (it needs `ctx.elicit_url` to hand the consent URL to the client), and every
+  in-band call was refused with `does not accept unknown argument(s): ctx`. In-band
+  authorization was therefore dead in 0.1.0, leaving `csa-google-gmail-calendar login` in a
+  terminal as the only way to authorize.
+
+  `_refuse_unknown_arguments` computes its accepted set from the JSON schema, and the SDK
+  strips a `Context` parameter from that schema because no client supplies one — then injects
+  `ctx` as a keyword argument at call time. The guard judged the SDK's own injection against a
+  schema that by construction could never contain it. Injected names are now derived by
+  subtraction from the raw signature and exempted, so a future injected parameter type is
+  covered without editing the guard. Nothing is weakened: a client cannot supply a name that
+  is absent from the wire schema.
+
+  Not caught by 688 tests at 100% coverage because every test reaches a tool through
+  `get_tool(name).fn(...)` and passes `ctx` **positionally**, while the guard inspected only
+  `kwargs` — the one calling convention the real transport uses was the one no test used.
+  Four regression tests, including one through `ToolManager.call_tool`, the real path.
+  ([#19](https://github.com/CloudSecurityAlliance/csa-google-gmail-calendar/pull/19))
+
 ## [0.1.0] - 2026-09-26
 
 First release. 46 tools, 686 tests at 100% coverage, and **9/9 checks against a real
