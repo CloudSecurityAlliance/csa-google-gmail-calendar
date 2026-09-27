@@ -86,23 +86,49 @@ def test_from_env_reads_the_variable(root, monkeypatch):
     assert from_env().resolve("ok.pdf").name == "ok.pdf"
 
 
-def test_from_env_with_no_variable_falls_back_to_the_default(tmp_path, monkeypatch):
-    """#23 changed this: an unset variable used to mean "sending attachments is off". That was
-    a defensible fail-closed posture whose practical effect was that nobody used the feature.
-
-    **HOME is redirected at tmp_path**, and must stay that way. `from_env()` now CREATES a
-    missing default root, so a test that let it see the real home would make a directory in the
-    developer's `~/Documents` as a side effect of running the suite - which it did, once, before
-    this was written."""
+def test_from_env_with_no_variable_uses_the_default_when_it_exists(tmp_path, monkeypatch):
+    """#23 gave this a default; #25 stopped it creating one. The directory has to already be
+    there, which for the send side means a person made it deliberately."""
     monkeypatch.delenv("CSA_GGC_ATTACH_DIR", raising=False)
     monkeypatch.setenv("HOME", str(tmp_path))
-    monkeypatch.setenv("USERPROFILE", str(tmp_path))   # expanduser's Windows source
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    outbox = tmp_path / "Documents" / "CSA-Outbox"
+    outbox.mkdir(parents=True)
 
     policy = from_env()
 
     assert policy.from_default is True
-    assert policy.root == (tmp_path / "Documents" / "CSA-Outbox").resolve()
-    assert policy.root.is_dir(), "a defaulted root that does not exist is created, not refused"
+    assert policy.root == outbox.resolve()
+    assert policy.warning is None
+
+
+def test_a_missing_default_is_left_off_and_never_created(tmp_path, monkeypatch):
+    """**Safe by default beats working by surprise (#25).** Creating the directory would make
+    the feature work by writing into somebody's home because a program started - a side effect
+    nobody sanctioned, for a path nobody chose. So: server starts, direction off, reason said."""
+    monkeypatch.delenv("CSA_GGC_ATTACH_DIR", raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+
+    policy = from_env()
+
+    assert policy.root is None
+    assert not (tmp_path / "Documents").exists(), "a default must never be created"
+    assert "does not exist" in policy.warning
+    assert "CSA_GGC_ATTACH_DIR" in policy.warning
+
+
+def test_the_refusal_says_the_directory_is_missing_not_that_none_is_configured(
+        tmp_path, monkeypatch):
+    """"No attachment directory is configured" would be FALSE here - one is, by default, and it
+    merely is not there. It also sends the reader to set a variable when making a directory is
+    the shorter fix."""
+    monkeypatch.delenv("CSA_GGC_ATTACH_DIR", raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+
+    with pytest.raises(PolicyError, match="does not exist"):
+        from_env().resolve("x.pdf")
 
 
 def test_an_explicitly_set_directory_that_is_missing_is_still_refused(tmp_path, monkeypatch):

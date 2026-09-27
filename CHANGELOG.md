@@ -3,6 +3,54 @@
 All notable changes to this project are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.3.0] - 2026-09-26
+
+### Changed
+
+- **A default directory is never created.** 0.2.0 created a defaulted root that did not exist;
+  this does not. If `~/Downloads` or `~/Documents/CSA-Outbox` is absent, that direction is
+  **off**, the server **starts anyway**, and it **says which directory to make**.
+
+  The defaults themselves are unchanged (`~/Downloads`, `~/Documents/CSA-Outbox`), and either
+  variable still overrides.
+
+  Creating the directory made the feature work by writing into somebody's home because a
+  program started - a side effect nobody sanctioned, for a path nobody chose. **Safe by default
+  beats working by surprise.** Three options existed for a missing default - create it, refuse
+  to start, or leave the direction off - and only the third neither writes unbidden nor
+  punishes someone for a path they never picked.
+
+  It also gives the send side a better opt-in than any flag would. `~/Downloads` exists on
+  essentially every machine, so receiving attachments works immediately. `~/Documents/CSA-Outbox`
+  exists on none, so **sending a local file stays off until a person creates that directory** -
+  and creating it is a deliberate act that means "outgoing attachments, from here". The more
+  dangerous direction is the one that requires the gesture.
+
+- **An explicitly configured directory that does not exist still raises**, unchanged. That is a
+  typo, and failing loudly at startup is the whole reason the check lives in the constructor.
+  The split is between a path the operator asserted and one this project picked.
+
+- **The refusal no longer says "no attachment directory is configured" when one is.** With a
+  default present-but-missing that sentence was false, and it sent the reader to set a variable
+  when making a directory is the shorter fix. The refusal is now the same sentence as the
+  startup warning, naming the path.
+
+### Added
+
+- `describe_configuration` reports `attachment_directory_note` and `download_directory_note` -
+  *why* a directory is null, when there is a reason worth stating. `null` alone cannot
+  distinguish "the default is missing" from "nothing is configured", and the remedies differ.
+
+- A startup warning per unusable default, on stderr beside the existing ones. A feature being
+  off is tolerable; a feature being off with no statement of why is not.
+
+### Notes
+
+The test that asserts the two defaults are disjoint now creates both directories first, on
+purpose: a missing default yields `root is None`, and `check_directories_disjoint` returns early
+on a `None` root - so without those mkdirs the test would have passed by never running the check
+it exists to run.
+
 ## [0.2.0] - 2026-09-26
 
 ### Changed

@@ -128,25 +128,20 @@ def _echo(path: str) -> str:
     return f"{path[:_MAX_ECHO]!r}... ({len(path)} chars, truncated)"
 
 
-def _create_default_root(resolved_root: pathlib.Path, var: str) -> None:
-    """Create a DEFAULTED root, or explain why the default cannot be used.
-
-    Only ever called for a path this project chose. `parents=True` because both defaults sit one
-    level below a home directory that may itself be unusual (a redirected `~/Documents`, a home
-    on a volume that is not mounted yet), and `exist_ok=True` because two servers starting at
-    once is ordinary rather than an error.
-
-    A failure here is NOT fatal-by-exception on its own: it falls through to the `is_dir()` check
-    below, which raises the same actionable message an explicitly-configured bad path gets. The
-    message names the variable, so the remedy - set it somewhere writable - is the one the reader
-    needs, whether they had set it or not.
-    """
-    try:
-        resolved_root.mkdir(parents=True, exist_ok=True)
-    except OSError as exc:
-        raise PolicyError(
-            f"the default directory for {var} ({resolved_root}) does not exist and could not "
-            f"be created: {exc}. Set {var} to a directory this server may use instead.") from exc
+# A DEFAULT that does not exist is left unconfigured, and said out loud. It is NOT created.
+#
+# Creating it would make the feature work, and would do so by writing into somebody's home
+# directory because a program started - a side effect nobody sanctioned, for a path nobody
+# chose. Safe-by-default beats working-by-surprise: the server starts, the direction stays off,
+# and the operator is told exactly which directory to make or which variable to set.
+#
+# It also gives the send side a better opt-in than a flag. `~/Downloads` exists on essentially
+# every machine, so receiving works immediately. `~/Documents/CSA-Outbox` exists on none, so
+# **sending a local file stays off until a person makes that directory** - and making it is a
+# deliberate act that says "outgoing attachments, from here". The safer direction is the one
+# that requires the gesture.
+_MISSING_DEFAULT = ("the default directory for {var} ({path}) does not exist, so {what} is off. "
+                    "Create that directory, or set {var} to one that exists.")
 
 
 class AttachmentPolicy:
@@ -155,16 +150,21 @@ class AttachmentPolicy:
 
         It changes exactly two things, and both follow from that distinction:
 
-        - **A missing directory is created rather than refused.** An explicitly configured root
-          that does not exist is a typo, and failing loudly at startup is the whole point of
-          checking here rather than on first use. A DEFAULT that does not exist is just a first
-          run on a machine where nobody has made the directory yet, and failing a user for a
-          path they never chose would make the default worse than no default.
+        - **A missing directory leaves this direction OFF, with a warning, instead of raising.**
+          An explicitly configured root that does not exist is a typo, and failing loudly at
+          startup is the whole point of checking here rather than on first use. A DEFAULT that
+          does not exist is just a machine where nobody has made that directory, and neither
+          killing the server nor silently creating the directory is the right answer to that -
+          the first punishes someone for a path they never chose, the second writes into their
+          home because a program started.
         - **It is reported as the default**, by `describe_configuration` and by the disjointness
           refusal, so a message naming two directories says which of them the reader actually
           chose.
         """
         self.from_default = from_default
+        # Set on every path so callers never have to guard the attribute's existence; non-None
+        # only for a default that could not be used.
+        self.warning: str | None = None
         if not root:
             self.root: pathlib.Path | None = None
             return
@@ -184,10 +184,16 @@ class AttachmentPolicy:
         except ValueError as exc:
             raise PolicyError(f"{ENV_VAR} is set to {_echo(root)}, which is not a valid path: "
                                f"{exc}") from exc
-        if from_default and not resolved_root.exists():
-            _create_default_root(resolved_root, ENV_VAR)
         if not resolved_root.is_dir():
             kind = "does not exist" if not resolved_root.exists() else "is not a directory"
+            if from_default:
+                # Not an error: nobody asked for this path, so it must not stop the server or
+                # the OTHER direction, which may be configured perfectly well.
+                self.root = None
+                self.warning = _MISSING_DEFAULT.format(
+                    var=ENV_VAR, path=resolved_root,
+                    what="attaching a local file to outgoing mail")
+                return
             raise PolicyError(
                 f"{ENV_VAR} is set to {_echo(root)}, but {resolved_root} {kind}. Configure "
                 f"{ENV_VAR} to point at a directory this server may read attachments from.")
@@ -195,7 +201,11 @@ class AttachmentPolicy:
 
     def resolve(self, path: str) -> pathlib.Path:
         if self.root is None:
+            # "nothing is configured" would be false when a default exists and simply is not
+            # there - and it sends the reader to set a variable when making a directory is the
+            # shorter fix. The warning already says which, so it is the message.
             raise PolicyError(
+                self.warning or
                 f"attachments are disabled: no attachment directory is configured. Set "
                 f"{ENV_VAR} to a directory this server may read files from, and only files "
                 f"under it can be attached.")
@@ -265,6 +275,7 @@ class DownloadPolicy:
     def __init__(self, root: str | None, *, from_default: bool = False) -> None:
         """`from_default` carries the same meaning as on `AttachmentPolicy` - see there."""
         self.from_default = from_default
+        self.warning: str | None = None
         if not root:
             self.root: pathlib.Path | None = None
             return
@@ -273,10 +284,14 @@ class DownloadPolicy:
         except ValueError as exc:
             raise PolicyError(f"{DOWNLOAD_ENV_VAR} is set to {_echo(root)}, which is not a "
                                f"valid path: {exc}") from exc
-        if from_default and not resolved_root.exists():
-            _create_default_root(resolved_root, DOWNLOAD_ENV_VAR)
         if not resolved_root.is_dir():
             kind = "does not exist" if not resolved_root.exists() else "is not a directory"
+            if from_default:
+                self.root = None
+                self.warning = _MISSING_DEFAULT.format(
+                    var=DOWNLOAD_ENV_VAR, path=resolved_root,
+                    what="saving an incoming attachment")
+                return
             raise PolicyError(
                 f"{DOWNLOAD_ENV_VAR} is set to {_echo(root)}, but {resolved_root} {kind}. "
                 f"Configure {DOWNLOAD_ENV_VAR} to point at a directory this server may write "
@@ -294,6 +309,7 @@ class DownloadPolicy:
         chose."""
         if self.root is None:
             raise PolicyError(
+                self.warning or
                 f"downloads are disabled: no download directory is configured. Set "
                 f"{DOWNLOAD_ENV_VAR} to a directory this server may write downloaded "
                 f"attachments to.")
