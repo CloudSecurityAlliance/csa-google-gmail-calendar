@@ -174,18 +174,42 @@ Three properties of that:
   out-of-band confirmation is not *one* mitigation, it is the *only* reliable one. Better
   detection does not defeat a genuine compromised account; a phone call does.
 
-### The four categories stay, as shapes of observation
+### One claim, and it names its baseline
 
-Not verdicts — descriptions of what kind of thing was noticed:
+The only thing the analyser can honestly establish is **"this is abnormal"** — and the useful part
+is *relative to what*. What looked like four categories was really one claim against three
+different baselines:
 
-- **`noted`** — an observation, with what would explain it innocently
-- **`unusual`** — a departure from this mailbox's own pattern
-- **`inconsistent`** — two things in the message contradict each other
-- **`unavailable`** — the check could not run (no network, no history, lookup failed)
+| observation | abnormal relative to |
+|---|---|
+| `Reply-To` differs from `From` | **the protocol** — what a well-formed message looks like |
+| never heard from this domain before | **this mailbox** — what your correspondence looks like |
+| the participants changed mid-thread | **this thread** — what this conversation looked like an hour ago |
 
-`unavailable` is load-bearing and is the mistake this project has made five times already:
+Naming the baseline is what makes an observation arguable. *"Unusual"* invites "says who?";
+*"you have never received mail from this domain, in 4 years of history"* invites a person to
+say "yes I have, from my phone" — and be right, which is the outcome a good tool makes easy.
+
+Four labels also invite being read as a severity ladder, and a ladder is a score with extra steps.
+One claim cannot ladder.
+
+So findings come in three shapes, and only the first is a claim about the message:
+
+- **abnormal** — departs from a named baseline, with the baseline stated and the innocent
+  explanation offered
+- **context** — a fact that carries no weight alone and changes what a departure means: a role
+  account in the recipients, a domain registered three weeks ago, language about changing payment
+  details. On its own, noise. Beside an abnormality, the thing that makes it matter
+- **not checked** — and *why*: no network, no history, lookup failed
+
+**`not checked` is load-bearing**, and it is the mistake this project has made five times already:
 **absence of information must never render as a positive answer.** A domain whose age could not be
-determined is not a young domain and is not an old one. Say which check did not run, and why.
+determined is not a young domain and is not an old one.
+
+The split between *abnormal* and *context* is also what keeps the model's job honest. Context is
+where "a domain registered three weeks ago" lives — a fact, not a finding. It becomes a finding
+only beside "and you have corresponded with this organisation for four years", which is a
+different baseline entirely. **The server supplies both; the composition is not its to make.**
 
 ### Composition belongs to the model, not to a rule
 
@@ -282,6 +306,10 @@ Tier L first is deliberate even though Tier T is more valuable: T needs the voca
 and building the hard check while inventing the output contract gets both wrong.
 
 ## 6. What this must not become
+
+**More than one word for the claim.** There is one: *abnormal*, relative to a named baseline.
+Adding shades — suspicious, concerning, high — rebuilds the ladder that a single claim exists to
+avoid, and each shade is a judgement about danger the analyser cannot make.
 
 **A score.** A single number invites a threshold, a threshold invites tuning, and a tuned
 threshold becomes a green tick with extra steps — which §9 already identifies as the failure mode
