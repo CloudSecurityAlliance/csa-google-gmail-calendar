@@ -257,11 +257,22 @@ def _refuse_unknown_arguments(fn: _F) -> _F:
     be registered with, never a hand-maintained second copy that could drift from it.
     """
     accepted = _declared_properties(fn)
+    # Parameters the SDK **injects** rather than taking from the caller - `ctx: Context` - are
+    # deliberately absent from the JSON schema, because no client ever supplies them. Judging a
+    # call against the schema alone therefore refuses the SDK's OWN injection, which is what
+    # shipped in 0.1.0: `authenticate` is the only tool here with a `Context` parameter, and it
+    # was unreachable through the real transport from the day it was written.
+    #
+    # Derived by subtraction from the raw signature rather than by naming `ctx`, so an injected
+    # parameter of some future type is covered without editing this. Nothing is weakened by it:
+    # these names are absent from the wire schema, so a client cannot supply one - the SDK builds
+    # its call from the schema and then injects, which is the only way such a key gets here.
+    injected = frozenset(inspect.signature(fn).parameters) - accepted
 
     if inspect.iscoroutinefunction(fn):
         @functools.wraps(fn)
         async def awrapped(*args: Any, **kwargs: Any) -> Any:
-            unknown = set(kwargs) - accepted
+            unknown = set(kwargs) - accepted - injected
             if unknown:
                 raise ToolError(
                     f"{fn.__name__} does not accept unknown argument(s): "
@@ -272,7 +283,7 @@ def _refuse_unknown_arguments(fn: _F) -> _F:
 
     @functools.wraps(fn)
     def wrapped(*args: Any, **kwargs: Any) -> Any:
-        unknown = set(kwargs) - accepted
+        unknown = set(kwargs) - accepted - injected
         if unknown:
             raise ToolError(
                 f"{fn.__name__} does not accept unknown argument(s): "
