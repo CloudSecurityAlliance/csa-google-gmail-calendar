@@ -101,19 +101,32 @@ def test_from_env_reads_the_variable(root, monkeypatch):
     assert p.write("a.txt", b"x").parent == root
 
 
-def test_from_env_with_no_variable_falls_back_to_downloads(tmp_path, monkeypatch):
-    """#23. HOME is redirected at tmp_path so the suite never creates or writes into the real
-    `~/Downloads` - see the sibling test in test_attachment_allowlist.py for what happened the
-    one time it was not."""
+def test_from_env_with_no_variable_uses_downloads_when_it_exists(tmp_path, monkeypatch):
+    monkeypatch.delenv("CSA_GGC_DOWNLOAD_DIR", raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    (tmp_path / "Downloads").mkdir()
+
+    policy = download_policy_from_env()
+
+    assert policy.from_default is True
+    assert policy.root == (tmp_path / "Downloads").resolve()
+    assert policy.warning is None
+
+
+def test_a_missing_downloads_is_left_off_and_never_created(tmp_path, monkeypatch):
+    """`~/Downloads` exists on essentially every machine, so this is the rare case - but "rare"
+    is not "never", and a server that silently made the directory would be doing it on exactly
+    the machines whose owner had removed it on purpose."""
     monkeypatch.delenv("CSA_GGC_DOWNLOAD_DIR", raising=False)
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("USERPROFILE", str(tmp_path))
 
     policy = download_policy_from_env()
 
-    assert policy.from_default is True
-    assert policy.root == (tmp_path / "Downloads").resolve()
-    assert policy.root.is_dir()
+    assert policy.root is None
+    assert not (tmp_path / "Downloads").exists()
+    assert "CSA_GGC_DOWNLOAD_DIR" in policy.warning
 
 
 def test_an_explicitly_set_download_directory_that_is_missing_is_still_refused(

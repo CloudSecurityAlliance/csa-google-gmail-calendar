@@ -29,11 +29,23 @@ class TestTheDefaultsAreDisjointByConstruction:
     def test_the_two_defaults_are_not_the_same_directory(self, tmp_path, monkeypatch):
         """If this ever fails, a fresh install cannot start at all - `create_server` calls
         `check_directories_disjoint` unconditionally. Asserted on the real default strings
-        rather than on the idea, so a later edit to either constant is caught here."""
+        rather than on the idea, so a later edit to either constant is caught here.
+
+        **Both directories are created first, on purpose.** Since #25 a missing default yields
+        `root is None`, and `check_directories_disjoint` returns early on a None root - so
+        without these mkdirs the check would pass by never running, which is the shape of a
+        test that cannot fail."""
         monkeypatch.delenv("CSA_GGC_ATTACH_DIR", raising=False)
         monkeypatch.delenv("CSA_GGC_DOWNLOAD_DIR", raising=False)
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("USERPROFILE", str(tmp_path))
+        (tmp_path / "Documents" / "CSA-Outbox").mkdir(parents=True)
+        (tmp_path / "Downloads").mkdir()
 
-        check_directories_disjoint(from_env(), download_policy_from_env())
+        attach, download = from_env(), download_policy_from_env()
+        assert attach.root is not None and download.root is not None, "both must be live"
+
+        check_directories_disjoint(attach, download)
 
     def test_downloads_is_not_the_send_side_default(self):
         """The whole reason the send-side default is a CSA-specific directory. `~/Downloads` is
@@ -45,10 +57,16 @@ class TestTheDefaultsAreDisjointByConstruction:
 
 
 class TestDefaultVersusExplicit:
-    def test_a_defaulted_root_is_created(self, tmp_path):
+    def test_a_missing_defaulted_root_is_off_not_created_and_not_fatal(self, tmp_path):
+        """#25 reversed #23's original answer here. Three options existed for a default that
+        does not exist - create it, refuse to start, or leave the direction off - and only the
+        third neither writes into somebody's home unbidden nor punishes them for a path they
+        never chose. It must also not be fatal: the OTHER direction may be configured fine."""
         policy = AttachmentPolicy(str(tmp_path / "made" / "up"), from_default=True)
-        assert policy.root.is_dir()
+        assert policy.root is None
         assert policy.from_default is True
+        assert policy.warning and "does not exist" in policy.warning
+        assert not (tmp_path / "made").exists()
 
     def test_an_explicit_root_is_never_created(self, tmp_path):
         """The property that must survive: a path the operator asserted and got wrong fails
@@ -59,7 +77,9 @@ class TestDefaultVersusExplicit:
         assert not (tmp_path / "typo").exists()
 
     def test_the_same_split_applies_to_downloads(self, tmp_path):
-        assert DownloadPolicy(str(tmp_path / "made"), from_default=True).root.is_dir()
+        defaulted = DownloadPolicy(str(tmp_path / "made"), from_default=True)
+        assert defaulted.root is None and defaulted.warning
+        assert not (tmp_path / "made").exists()
         with pytest.raises(PolicyError, match="does not exist"):
             DownloadPolicy(str(tmp_path / "typo"))
 
@@ -71,14 +91,18 @@ class TestDefaultVersusExplicit:
         assert policy.root == chosen.resolve()
         assert policy.from_default is False
 
-    def test_an_undeletable_default_names_the_variable_to_set_instead(self, tmp_path):
-        """A default that cannot be created must not read as a bug in the program. The remedy
-        is the same one an explicit bad path gets - set the variable somewhere usable - so the
-        message has to name it."""
+    def test_a_default_that_is_a_file_is_also_just_off(self, tmp_path):
+        """Not only "missing" - any reason the default is unusable lands in the same place. A
+        path that exists but is not a directory must not raise either, for the same reason: it
+        is still a path nobody chose."""
         blocker = tmp_path / "blocker"
         blocker.write_text("I am a file, not a directory")
-        with pytest.raises(PolicyError, match="CSA_GGC_ATTACH_DIR"):
-            AttachmentPolicy(str(blocker / "under" / "a" / "file"), from_default=True)
+
+        policy = AttachmentPolicy(str(blocker), from_default=True)
+
+        assert policy.root is None
+        assert "CSA_GGC_ATTACH_DIR" in policy.warning
+        assert blocker.read_text() == "I am a file, not a directory", "must not be touched"
 
 
 class TestTheDisjointnessRefusalSaysWhichPathYouChose:

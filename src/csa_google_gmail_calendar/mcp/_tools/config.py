@@ -164,6 +164,15 @@ def register_config_tools(app: MCPServer, settings: Settings, flavour: str,
                                                 and attach_policy.from_default),
             "download_directory_is_default": (download_policy is not None
                                               and download_policy.from_default),
+            # WHY a directory is null, when there is a reason worth stating. Since #25 a default
+            # that does not exist leaves its direction off rather than being created, and "null"
+            # alone cannot distinguish that from "nothing is configured" - which sends the reader
+            # to set a variable when making a directory is the shorter fix. `None` when there is
+            # nothing to explain.
+            "attachment_directory_note": (attach_policy.warning
+                                          if attach_policy is not None else None),
+            "download_directory_note": (download_policy.warning
+                                        if download_policy is not None else None),
             "registered_tools": sorted(registered),
             "hidden_by_capability": sorted(set(TOOL_CAPABILITIES) - cap_allowed),
             "hidden_by_flavour": sorted(hidden_by_flavour(flavour, cap_allowed)),

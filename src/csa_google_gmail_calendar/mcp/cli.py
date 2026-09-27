@@ -117,9 +117,12 @@ environment:
   CSA_GGC_CLIENT_SECRETS OAuth client secrets JSON (`login`/`authenticate` only; defaults to
                          ~/.csa_google_gmail_calendar/client_secret.json if that exists)
   CSA_GGC_ATTACH_DIR     directory outgoing mail may attach files from
-                         (default: ~/Documents/CSA-Outbox, created if missing)
+                         (default: ~/Documents/CSA-Outbox). NEVER created - if the default
+                         does not exist, attaching is off and the server says so at startup,
+                         so making that directory is how you turn sending files on.
   CSA_GGC_DOWNLOAD_DIR   directory get_attachment writes downloaded attachments to
-                         (default: ~/Downloads). Must NOT be CSA_GGC_ATTACH_DIR, or a directory nested
+                         (default: ~/Downloads, also never created). Must NOT be
+                         CSA_GGC_ATTACH_DIR, or a directory nested
                          inside/around it - the server refuses to start if they overlap, since
                          a stranger's downloaded attachment landing in the directory outgoing
                          mail reads from is exactly the bug this separation closes.
@@ -180,6 +183,13 @@ def main(argv: Sequence[str] | None = None, env: Mapping[str, str] | None = None
     backend = PolicyBackend(_LazyApiBackend(settings), policy)
     attach_policy = attachment_policy_from_env()
     download_policy = download_policy_from_env()
+    # A default directory that does not exist leaves its direction off rather than creating the
+    # directory or refusing to start (#25). Neither of those is silent, so this must not be
+    # either: the one thing worse than a feature being off is a feature being off with no
+    # statement of why. Printed beside the other startup warnings, on stderr for the same reason.
+    for pol in (attach_policy, download_policy):
+        if pol.warning:
+            print(f"csa-google-gmail-calendar: {pol.warning}", file=sys.stderr)
     flavour = flavour_from_env(env)
     create_server(backend, policy, flavour=flavour, attach_policy=attach_policy,
                  download_policy=download_policy).run(transport="stdio")

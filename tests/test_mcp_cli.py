@@ -142,3 +142,33 @@ def test_lazy_api_backend_getattr_forwards_to_the_resolved_backend(monkeypatch):
 
     lazy = cli._LazyApiBackend(settings=_StubSettings())  # type: ignore[arg-type]
     assert lazy.get_profile() == {"emailAddress": "a@example.com"}
+
+
+def test_a_usable_directory_produces_no_startup_warning(tmp_path, monkeypatch, capsys):
+    """The other half of the missing-default warning (#25): when both directories ARE usable,
+    the serve path must say nothing about them.
+
+    Worth its own test rather than assumed. Every other test here runs with HOME redirected to
+    an empty temp directory, so BOTH defaults are missing and both warn - which left the
+    "nothing to warn about" arc of that loop unexecuted, and coverage said so. A warning that
+    has only ever been observed firing is not one anybody has seen stay quiet."""
+    outbox = tmp_path / "outbox"
+    downloads = tmp_path / "downloads"
+    outbox.mkdir()
+    downloads.mkdir()
+    monkeypatch.setenv("CSA_GGC_ATTACH_DIR", str(outbox))
+    monkeypatch.setenv("CSA_GGC_DOWNLOAD_DIR", str(downloads))
+
+    class _FakeServer:
+        def run(self, transport):
+            pass
+
+    monkeypatch.setattr("csa_google_gmail_calendar.mcp.cli.create_server",
+                        lambda backend, policy, flavour="full", attach_policy=None,
+                        download_policy=None: _FakeServer())
+    assert cli.main([], env={}) == 0
+
+    err = capsys.readouterr().err
+    assert "does not exist" not in err
+    assert "CSA_GGC_ATTACH_DIR" not in err
+    assert "CSA_GGC_DOWNLOAD_DIR" not in err
