@@ -6,6 +6,7 @@ task adds.
 import anyio
 import pytest
 from mcp.server import MCPServer
+from mcp.server.mcpserver import Context
 from mcp.server.mcpserver.exceptions import ToolError
 
 from csa_google_gmail_calendar import exceptions as exc
@@ -217,3 +218,85 @@ def test_tool_registers_the_composed_function_under_the_given_name():
     assert registered.fn(a=2) == {"a": 2}
     with pytest.raises(ToolError, match="unknown argument"):
         registered.fn(a=2, bogus=1)
+
+
+# ── SDK-injected parameters ─────────────────────────────────────────
+#
+# The defect these pin down shipped in 0.1.0: `authenticate` takes `ctx: Context` so it can call
+# `ctx.elicit_url(...)`, FastMCP strips a `Context` parameter from the JSON schema (no client
+# supplies one), `_refuse_unknown_arguments` computed its accepted set FROM that schema, and the
+# SDK then injects `ctx` **as a keyword argument** - so the guard refused the SDK's own injection
+# and the tool could not be called at all through the real transport.
+#
+# Every existing test passed `ctx` POSITIONALLY (`fn(ctx, force=True)`, see `test_auth_tool.py`'s
+# `_call_async`), and the guard only ever inspected `kwargs` - so the single convention the real
+# transport uses was the one convention no test used. The line was covered on every run. Passing
+# `ctx` by KEYWORD is the entire point of the two tests below; a later tidy-up into a positional
+# call would silently restore the blind spot.
+
+def test_refuse_unknown_arguments_allows_a_context_the_sdk_injects_by_keyword_async():
+    async def fn(ctx: Context, a: int = 1) -> dict:
+        """doc"""
+        return {"a": a, "ctx": ctx}
+
+    # Without this the test would be vacuous: it only proves anything if `ctx` really is absent
+    # from the schema the guard derives its accepted set from.
+    assert "ctx" not in _base._declared_properties(fn)
+
+    wrapped = _base._refuse_unknown_arguments(fn)
+    assert _run(wrapped(ctx="injected", a=2)) == {"a": 2, "ctx": "injected"}
+
+
+def test_refuse_unknown_arguments_allows_a_context_the_sdk_injects_by_keyword_sync():
+    def fn(ctx: Context, a: int = 1) -> dict:
+        """doc"""
+        return {"a": a, "ctx": ctx}
+
+    assert "ctx" not in _base._declared_properties(fn)
+
+    wrapped = _base._refuse_unknown_arguments(fn)
+    assert wrapped(ctx="injected", a=2) == {"a": 2, "ctx": "injected"}
+
+
+def test_refuse_unknown_arguments_still_refuses_a_bogus_keyword_on_a_context_tool():
+    """The fix widens the accepted set by exactly the injected names, not by "anything goes" -
+    a tool with a `Context` parameter must still refuse an argument nobody declared."""
+    async def fn(ctx: Context, a: int = 1) -> dict:
+        """doc"""
+        return {"a": a}
+
+    wrapped = _base._refuse_unknown_arguments(fn)
+
+    async def call():
+        return await wrapped(ctx="injected", a=2, bogus="y")
+    with pytest.raises(ToolError, match="unknown argument"):
+        _run(call())
+
+
+def test_a_context_tool_survives_the_sdks_own_call_path():
+    """The end-to-end shape of the 0.1.0 defect, exercised through `ToolManager.call_tool` -
+    the path the real MCP transport uses - rather than through `.fn(...)`.
+
+    This is the test that would have caught it. Every other test in this repo reaches a tool by
+    `server._tool_manager.get_tool(name).fn(**kw)`, which is deliberate (see this module's
+    docstring: the invariants must live in the function those tests call). The cost, unnoticed
+    until a real client called `authenticate` and got a refusal, is that `.fn(...)` lets the test
+    choose how `ctx` is passed while the SDK does not - so a guard keyed on `kwargs` looked
+    correct under every test and was wrong in production. One test on the real path covers the
+    whole class; it is cheap, and it does not replace the direct-`fn` tests, it backstops them.
+    """
+    app = MCPServer(name="probe", version="0.0.0")
+
+    @_base.tool(app, annotations=_base.READ)
+    async def needs_context(ctx: Context, a: int = 1) -> dict:
+        """doc"""
+        return {"a": a}
+
+    # Vacuity guard, as above: this proves something only while `ctx` is absent from the schema,
+    # which is what makes the SDK inject it instead of passing it through as an argument.
+    assert "ctx" not in (app._tool_manager.get_tool("needs_context").parameters
+                         or {}).get("properties", {})
+
+    async def call():
+        return await app._tool_manager.call_tool("needs_context", {"a": 7}, None)
+    assert _run(call()) == {"a": 7}
