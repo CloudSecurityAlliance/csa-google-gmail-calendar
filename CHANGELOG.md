@@ -3,6 +3,38 @@
 All notable changes to this project are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.5.1] - 2026-09-29
+
+### Fixed
+- **An absolute filename was not refused outright on Windows.** `DownloadPolicy.resolve`'s
+  docstring promises that an absolute path or a `..` segment - values that come from
+  whichever attachment part of a message a stranger wrote - is *"refused outright rather
+  than silently reinterpreted"*. On Windows the guard never fired:
+  `WindowsPath("/etc/passwd").is_absolute()` is `False`, because pathlib wants a drive
+  letter before it calls a path absolute, and `root / Path("/etc/passwd")` then evaluates
+  to `C:\etc\passwd` - the join discards the root entirely.
+
+  **Nothing escaped.** The containment check on the resolved path still refused it, so this
+  was the first of two layers being inert on one platform rather than a way out of the
+  attachment directory, and the visible symptom was a refusal that named the wrong reason.
+  Now checked with `os.path.isabs` as well, which *is* `posixpath.isabs` on POSIX - so
+  Linux and macOS behaviour is unchanged by construction. `AttachmentPolicy.resolve`
+  carried the same join and the same reasoning.
+
+  Found by running this suite on Windows for the first time (#29). No configuration
+  changes, no tool-surface changes; upgrading is the whole action.
+
+### Changed
+- A required `windows-latest` CI job now runs the suite on every pull request. Every job
+  before it was `ubuntu-latest`, which is why a defect present since the attachment
+  directories landed went unobserved: a passing ubuntu job is evidence about ubuntu. The
+  suite went from 15 failures to 0 on Windows in the same change (#30).
+- The symlink-escape tests now probe whether this process *can* create a symlink rather
+  than testing `sys.platform`. They execute on GitHub's Windows runner, which is elevated,
+  and skip on an ordinary developer shell, which is not - so the escape refusals are under
+  test on Windows for the first time, and a skip states the control is unverified on that
+  machine rather than retiring it for the platform.
+
 ## [0.5.0] - 2026-09-28
 
 ### Added
