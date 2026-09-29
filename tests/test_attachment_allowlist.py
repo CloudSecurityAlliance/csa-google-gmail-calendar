@@ -122,7 +122,7 @@ def test_a_missing_default_is_left_off_and_never_created(tmp_path, monkeypatch):
     policy = from_env()
 
     assert policy.root is None
-    assert not (tmp_path / "Documents").exists(), "a default must never be created"
+    assert list(tmp_path.iterdir()) == [], "a default must never be created"
     assert "does not exist" in policy.warning
     assert "CSA_GGC_ATTACH_DIR" in policy.warning
 

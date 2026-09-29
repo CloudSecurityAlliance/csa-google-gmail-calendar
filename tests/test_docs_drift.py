@@ -5,11 +5,12 @@ there."""
 import pathlib
 import re
 
-from csa_google_gmail_calendar import policy
+from csa_google_gmail_calendar import _attachments, policy
 from csa_google_gmail_calendar.mcp import create_server
 
 README = pathlib.Path(__file__).parent.parent / "README.md"
 SRC = pathlib.Path(__file__).parent.parent / "src"
+CLI = SRC / "csa_google_gmail_calendar" / "mcp" / "cli.py"
 
 
 def _readme_tools_table_names(readme_text: str) -> set[str]:
@@ -71,6 +72,35 @@ def test_every_env_var_the_readme_documents_is_actually_read_somewhere():
         used |= set(re.findall(r'"(CSA_GGC_[A-Z_]+)"', f.read_text(encoding="utf-8")))
     phantom = documented - used
     assert not phantom, f"README documents variables nothing reads: {sorted(phantom)}"
+
+
+def test_default_attach_dir_matches_the_readme_and_the_cli_help():
+    """The two env-var tests above catch a variable the README forgets, not a default it gets
+    WRONG - `CSA_GGC_ATTACH_DIR`'s default lives in three places (`DEFAULT_ATTACH_DIR`, the
+    README's table row, and `cli.py`'s `--help` text) that must all name the same directory, and
+    nothing before this test compared them. This branch renamed the default from
+    `~/Documents/CSA-Outbox` to `~/CSA-Uploads` and is the proof that one of the three can be
+    missed - catch it here instead of in the next whole-branch review."""
+    default = _attachments.DEFAULT_ATTACH_DIR
+    readme = README.read_text(encoding="utf-8")
+    readme_row = next(line for line in readme.splitlines() if "CSA_GGC_ATTACH_DIR" in line)
+    assert default in readme_row, (
+        f"README's CSA_GGC_ATTACH_DIR row does not mention {default!r}: {readme_row!r}")
+    cli_help = CLI.read_text(encoding="utf-8")
+    assert default in cli_help, f"cli.py --help text does not mention {default!r}"
+
+
+def test_default_download_dir_matches_the_readme_and_the_cli_help():
+    """Same drift as above, checked for `CSA_GGC_DOWNLOAD_DIR` - it did not move on this branch,
+    but the three-place agreement it depends on is exactly as unchecked, so it is equally cheap
+    to guard now rather than the next time a default changes."""
+    default = _attachments.DEFAULT_DOWNLOAD_DIR
+    readme = README.read_text(encoding="utf-8")
+    readme_row = next(line for line in readme.splitlines() if "CSA_GGC_DOWNLOAD_DIR" in line)
+    assert default in readme_row, (
+        f"README's CSA_GGC_DOWNLOAD_DIR row does not mention {default!r}: {readme_row!r}")
+    cli_help = CLI.read_text(encoding="utf-8")
+    assert default in cli_help, f"cli.py --help text does not mention {default!r}"
 
 
 def test_todo_md_mentions_the_first_implementation_plan_is_complete_or_open_items_remain():

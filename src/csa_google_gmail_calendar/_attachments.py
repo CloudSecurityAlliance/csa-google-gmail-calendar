@@ -421,8 +421,8 @@ def _adopt_pending_default(policy: AttachmentPolicy | DownloadPolicy, var: str) 
 
     **Disjointness is re-asked here, not assumed.** The startup check ran when this root did not
     exist, so it proved nothing about it. A directory appearing later can collide with the other
-    side - `CSA_GGC_DOWNLOAD_DIR=~/Documents` with the default outbox nested inside it is the
-    ordinary way that happens - and adopting without checking would reopen the exact hole
+    side - `CSA_GGC_DOWNLOAD_DIR=~`, with the default outbox nested directly inside it, is how
+    that happens - and adopting without checking would reopen the exact hole
     `check_directories_disjoint` exists to close, just later and more quietly.
     """
     pending = policy._pending
@@ -516,7 +516,7 @@ def check_directories_disjoint(attach_policy: AttachmentPolicy | None,
     if attach_root is None or download_root is None:
         return
     # Once both sides have defaults (#23), a collision can involve a directory the reader never
-    # chose: `CSA_GGC_DOWNLOAD_DIR=~/Documents` collides with the DEFAULT attach root nested
+    # chose: `CSA_GGC_DOWNLOAD_DIR=~` collides with the DEFAULT attach root nested directly
     # inside it, and a message naming two paths would leave them hunting for a second variable
     # they never set. Saying which is which is the actionable half.
     a = _describe_root(attach_policy, ENV_VAR)
