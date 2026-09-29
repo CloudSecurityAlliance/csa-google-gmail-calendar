@@ -4,7 +4,10 @@
 # on macOS and publishes to PyPI, so a file deliberately excluded from the sdist could ship
 # anyway. Build-time only, so raising the floor costs consumers nothing - and it removes the
 # need to rely on the release job's sdist grep, which is a compensating control rather than a
-# fix. setuptools 83 and 84 both declare requires-python >=3.10, matching ours exactly. (#187)
+# fix. setuptools 83 and 84 both declare requires-python >=3.10. Ours is now >=3.14 (DEC-025),
+# so it is STRICTER than the build backend's rather than equal to it - which is the safe
+# direction and needs no action, but the previous wording claimed they matched exactly and
+# that is no longer true. (#187)
 requires = ["setuptools>=83"]
 build-backend = "setuptools.build_meta"
 
