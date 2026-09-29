@@ -110,10 +110,15 @@ ENV_VAR = "CSA_GGC_ATTACH_DIR"
 # empty until a person puts something in it, which is precisely the property that makes it safe
 # to read from by default.
 #
-# `~/Documents` may be OneDrive-redirected on a managed Windows machine. That still resolves to
-# a real directory, so the default works; it does mean an outbox can sync, which the README
-# says rather than leaving to be discovered.
-DEFAULT_ATTACH_DIR = "~/Documents/CSA-Outbox"
+# It sits beside `~/Downloads`, not inside it, and not under `~/Documents`. Both halves are
+# deliberate. Inside `~/Downloads` is the configuration `check_directories_disjoint` refuses
+# outright, so it could never have been the default. Under `~/Documents` was the default until
+# 2026-09-29, and it was wrong on Windows in a way nothing reported: OneDrive's Known Folder
+# Move redirects Documents by default, `os.path.expanduser` does not know that and string-joins
+# `$HOME/Documents` anyway, and both paths exist - so a person told to create the directory
+# made it in the Documents they could see while the server read one they could not. The home
+# root is redirected by nothing, on any platform, which is the whole reason it was chosen.
+DEFAULT_ATTACH_DIR = "~/CSA-Uploads"
 DEFAULT_DOWNLOAD_DIR = "~/Downloads"
 
 # A refused path is echoed into the exception message so the caller can see what was rejected.
@@ -136,7 +141,7 @@ def _echo(path: str) -> str:
 # and the operator is told exactly which directory to make or which variable to set.
 #
 # It also gives the send side a better opt-in than a flag. `~/Downloads` exists on essentially
-# every machine, so receiving works immediately. `~/Documents/CSA-Outbox` exists on none, so
+# every machine, so receiving works immediately. `~/CSA-Uploads` exists on none, so
 # **sending a local file stays off until a person makes that directory** - and making it is a
 # deliberate act that says "outgoing attachments, from here". The safer direction is the one
 # that requires the gesture.
@@ -407,7 +412,7 @@ def download_policy_from_env() -> DownloadPolicy:
 def _adopt_pending_default(policy: AttachmentPolicy | DownloadPolicy, var: str) -> None:
     """Look again at a defaulted directory that was missing at construction.
 
-    Called from `resolve()`, so `mkdir ~/Documents/CSA-Outbox` takes effect on the next tool
+    Called from `resolve()`, so `mkdir ~/CSA-Uploads` takes effect on the next tool
     call rather than on the next restart. Without this the server cached "absent" for its whole
     lifetime and went on refusing after somebody did exactly what it told them to, which is a
     worse failure than the original absence - the remedy appears not to work.
@@ -416,8 +421,8 @@ def _adopt_pending_default(policy: AttachmentPolicy | DownloadPolicy, var: str) 
 
     **Disjointness is re-asked here, not assumed.** The startup check ran when this root did not
     exist, so it proved nothing about it. A directory appearing later can collide with the other
-    side - `CSA_GGC_DOWNLOAD_DIR=~/Documents` with the default outbox nested inside it is the
-    ordinary way that happens - and adopting without checking would reopen the exact hole
+    side - `CSA_GGC_DOWNLOAD_DIR=~`, with the default outbox nested directly inside it, is how
+    that happens - and adopting without checking would reopen the exact hole
     `check_directories_disjoint` exists to close, just later and more quietly.
     """
     pending = policy._pending
@@ -511,7 +516,7 @@ def check_directories_disjoint(attach_policy: AttachmentPolicy | None,
     if attach_root is None or download_root is None:
         return
     # Once both sides have defaults (#23), a collision can involve a directory the reader never
-    # chose: `CSA_GGC_DOWNLOAD_DIR=~/Documents` collides with the DEFAULT attach root nested
+    # chose: `CSA_GGC_DOWNLOAD_DIR=~` collides with the DEFAULT attach root nested directly
     # inside it, and a message naming two paths would leave them hunting for a second variable
     # they never set. Saying which is which is the actionable half.
     a = _describe_root(attach_policy, ENV_VAR)
