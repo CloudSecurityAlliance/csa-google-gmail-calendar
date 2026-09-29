@@ -357,7 +357,7 @@ def register_demo_tools(app: MCPServer) -> None:
         # cannot collide on the one artefact this server cannot delete again - see the module
         # docstring on the label. The timestamp alone is not enough: wall-clock resolution on
         # some platforms is coarser than two Python calls back to back.
-        run_id = (datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        run_id = (datetime.datetime.now(datetime.UTC).strftime("%Y%m%dT%H%M%SZ")
                  + "-" + uuid.uuid4().hex[:8])
         registered = frozenset(t.name for t in app._tool_manager.list_tools())
 

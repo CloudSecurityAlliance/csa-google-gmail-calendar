@@ -13,7 +13,7 @@ name = "csa-google-gmail-calendar"
 dynamic = ["version"]
 description = "Read, compose and send Gmail, and manage Google Calendar events"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.14"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
 authors = [{ name = "Cloud Security Alliance" }]
@@ -31,10 +31,6 @@ classifiers = [
     "Intended Audience :: Developers",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.10",
-    "Programming Language :: Python :: 3.11",
-    "Programming Language :: Python :: 3.12",
-    "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",
     "Topic :: Communications :: Email",
     "Topic :: Office/Business :: Scheduling",
@@ -123,7 +119,7 @@ select = ["E", "F", "W", "I", "B", "UP"]
 "src/csa_google_gmail_calendar/mcp/_success_page.py" = ["E501"]
 
 [tool.mypy]
-python_version = "3.10"
+python_version = "3.14"
 files = ["src"]
 warn_unused_ignores = true
 warn_redundant_casts = true

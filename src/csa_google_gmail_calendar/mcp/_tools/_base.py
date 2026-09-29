@@ -121,7 +121,12 @@ def _refused(fn: Callable[..., Any], started: float, cause: BaseException,
     return ToolError(_untrusted.neutralise(message))
 
 
-def _errors(fn: _F) -> _F:
+# ruff's UP047 wants PEP 695 syntax here now that the floor is 3.14. Its autofix is WRONG:
+# it emits `def _errors[F: Callable[..., Any]](fn: _F) -> _F`, declaring `F` while the body
+# still refers to `_F`, which mypy rejects with "All type parameters should be declared".
+# Verified by applying it and running mypy. The TypeVar form below is correct and typed;
+# keeping it is the smaller risk. Revisit if the autofix is fixed upstream.
+def _errors(fn: _F) -> _F:  # noqa: UP047
     """Translate the library's typed exceptions into readable tool errors, and record the call.
 
     See the module docstring for the two invariants this holds. What is logged is deliberately
@@ -240,7 +245,12 @@ def _declared_properties(fn: Callable[..., Any]) -> frozenset[str]:
     return frozenset((spec.input_schema or {}).get("properties", {}))
 
 
-def _refuse_unknown_arguments(fn: _F) -> _F:
+# ruff's UP047 wants PEP 695 syntax here now that the floor is 3.14. Its autofix is WRONG:
+# it emits `def _errors[F: Callable[..., Any]](fn: _F) -> _F`, declaring `F` while the body
+# still refers to `_F`, which mypy rejects with "All type parameters should be declared".
+# Verified by applying it and running mypy. The TypeVar form below is correct and typed;
+# keeping it is the smaller risk. Revisit if the autofix is fixed upstream.
+def _refuse_unknown_arguments(fn: _F) -> _F:  # noqa: UP047
     """Refuse a call naming an argument `fn`'s own schema does not declare, rather than
     silently dropping it.
 

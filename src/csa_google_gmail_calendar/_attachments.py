@@ -118,6 +118,50 @@ ENV_VAR = "CSA_GGC_ATTACH_DIR"
 # `$HOME/Documents` anyway, and both paths exist - so a person told to create the directory
 # made it in the Documents they could see while the server read one they could not. The home
 # root is redirected by nothing, on any platform, which is the whole reason it was chosen.
+def _refuse_nul(raw: str, describe) -> None:
+    r"""Refuse a path containing a NUL byte, explicitly.
+
+    This used to be inferred: `Path.resolve(strict=False)` raised ValueError on an embedded
+    NUL because the underlying lstat() did, and the ValueError arms below turned that into a
+    policy refusal. Measured on Windows, that stopped being true:
+
+        Path('ok.pdf' + chr(0) + '.txt').resolve(strict=False)
+            3.12 -> ValueError        3.14 -> returns normally
+
+    So on 3.14 the refusal quietly became "does not exist" - still a refusal, but a
+    different one, arrived at by accident rather than by the check that exists for it. A
+    guard that works only while an unrelated function keeps raising is not a guard.
+
+    `describe` builds the message, because the four call sites word it differently (a
+    configured root names its environment variable; a caller-supplied path does not).
+    """
+    if "\x00" in raw:
+        raise PolicyError(describe(raw))
+
+
+def _is_rooted(path: str) -> bool:
+    r"""Does `path` start at a filesystem root, by any spelling this code may meet?
+
+    Asked directly rather than delegated to `os.path.isabs` or `Path.is_absolute`, because
+    BOTH have answered this differently across versions and platforms, and a security guard
+    must not depend on which CPython is running. Measured on Windows:
+
+        os.path.isabs('/etc/passwd')     3.12 -> True    3.14 -> False
+        Path('/etc/passwd').is_absolute()             -> False on both
+
+    Python 3.13 changed `ntpath.isabs` to require a drive letter, matching pathlib. That
+    is a defensible tidy-up of a confusing API, and it silently disarmed the guard below
+    on 3.14 - which had been repaired only hours earlier, for the 3.12 version of exactly
+    the same hole. Containment still refused the path both times, so this was a weakened
+    layer rather than an escape; a layer that keeps dying for a new reason is worth making
+    version-proof rather than repairing a third time.
+
+    A leading separator is what "rooted" means on every platform this ships to, so that is
+    what gets tested.
+    """
+    return path.startswith(("/", "\\")) or os.path.isabs(path)
+
+
 DEFAULT_ATTACH_DIR = "~/CSA-Uploads"
 DEFAULT_DOWNLOAD_DIR = "~/Downloads"
 
@@ -192,6 +236,8 @@ class AttachmentPolicy:
         # that a process which expects its attachment directory to be created *after* this
         # object is constructed cannot use this constructor as written; nothing in this project
         # does that today.
+        _refuse_nul(root, lambda r: f"{ENV_VAR} is set to {_echo(r)}, which is not a valid "
+                                    f"path: it contains a NUL byte.")
         try:
             resolved_root = pathlib.Path(os.path.expanduser(root)).resolve(strict=False)
         except ValueError as exc:
@@ -231,13 +277,14 @@ class AttachmentPolicy:
                 f"attachments are disabled: no attachment directory is configured. Set "
                 f"{ENV_VAR} to a directory this server may read files from, and only files "
                 f"under it can be attached.")
+        _refuse_nul(path, lambda r: f"{_echo(r)} is not a valid path: it contains a NUL byte.")
         expanded = os.path.expanduser(path)
         candidate = pathlib.Path(expanded)
         # See the note in `DownloadPolicy.resolve`: on Windows a leading-separator path is
         # not `is_absolute()`, so it was joined onto the root and the join silently threw the
         # root away. The containment check below caught the result either way; treating it as
         # absolute here just stops the join from producing a path nobody asked for.
-        if not (candidate.is_absolute() or os.path.isabs(expanded)):
+        if not (candidate.is_absolute() or _is_rooted(expanded)):
             candidate = self.root / candidate
         try:
             # strict=False so a MISSING file reaches the readable error below rather than
@@ -313,6 +360,8 @@ class DownloadPolicy:
         if not root:
             self.root: pathlib.Path | None = None
             return
+        _refuse_nul(root, lambda r: f"{DOWNLOAD_ENV_VAR} is set to {_echo(r)}, which is not "
+                                    f"a valid path: it contains a NUL byte.")
         try:
             resolved_root = pathlib.Path(os.path.expanduser(root)).resolve(strict=False)
         except ValueError as exc:
@@ -358,6 +407,8 @@ class DownloadPolicy:
                 f"downloads are disabled: no download directory is configured. Set "
                 f"{DOWNLOAD_ENV_VAR} to a directory this server may write downloaded "
                 f"attachments to.")
+        _refuse_nul(filename, lambda r: f"{_echo(r)} is not a valid path: it contains a NUL "
+                                        f"byte.")
         candidate = pathlib.Path(filename)
         # `os.path.isabs` AS WELL AS `Path.is_absolute`, and the difference is only visible
         # on Windows: `WindowsPath("/etc/passwd").is_absolute()` is False, because pathlib
@@ -368,7 +419,7 @@ class DownloadPolicy:
         # below still refused it, so nothing escaped, but the outright refusal this docstring
         # promises was inert on one platform (csa-google-gmail-calendar#29). On POSIX
         # `os.path.isabs` IS `posixpath.isabs`, so nothing changes there.
-        if os.path.isabs(filename) or candidate.is_absolute() or ".." in candidate.parts:
+        if _is_rooted(filename) or candidate.is_absolute() or ".." in candidate.parts:
             raise PolicyError(
                 f"{filename!r} is an invalid attachment filename (must be a plain relative "
                 f"name, no path separators or '..'). Refused rather than guessing what was "
