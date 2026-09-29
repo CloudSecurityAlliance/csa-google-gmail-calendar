@@ -3,6 +3,25 @@
 All notable changes to this project are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Changed
+- **The uploads directory default moved to `~/CSA-Uploads`**, from
+  `~/Documents/CSA-Outbox`. On Windows the old default was wrong in a way nothing
+  reported: OneDrive's Known Folder Move redirects Documents by default,
+  `os.path.expanduser` string-joins `$HOME/Documents` regardless, and both paths
+  exist — so somebody told to create the outbox created it in the Documents they
+  could see, while the server read one they could not, and attaching stayed off.
+
+  The new location sits beside `~/Downloads` rather than inside it — inside is the
+  configuration `check_directories_disjoint` refuses — and under a home root that
+  nothing redirects on any platform.
+
+  **If you have files in `~/Documents/CSA-Outbox`, move them to `~/CSA-Uploads`.**
+  Nothing migrates them: the server still never creates or moves this directory,
+  because its existence is what turns attaching on. If attaching goes quiet after
+  this upgrade, that is why, and the startup message names the new path.
+
 ## [0.5.0] - 2026-09-28
 
 ### Added
