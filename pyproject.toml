@@ -99,6 +99,12 @@ pythonpath = ["src"]
 testpaths = ["tests"]
 
 [tool.ruff]
+# Pinned, NOT inferred from requires-python. Inferred, ruff targets 3.14 and the
+# formatter emits PEP 758 unparenthesised `except A, B:` - valid on 3.14 and a
+# SyntaxError on 3.13 and below. That would make the floor a ONE-WAY DOOR: the
+# metadata is reversible, source that older Pythons cannot parse is not. Decoupling
+# the syntax we emit from the version we require keeps DEC-025 revisitable.
+target-version = "py312"
 line-length = 120
 extend-exclude = ["experiments", "research", "docs"]
 

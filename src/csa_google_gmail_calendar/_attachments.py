@@ -240,7 +240,13 @@ class AttachmentPolicy:
                                     f"path: it contains a NUL byte.")
         try:
             resolved_root = pathlib.Path(os.path.expanduser(root)).resolve(strict=False)
-        except ValueError as exc:
+        except ValueError as exc:  # pragma: no cover - see _refuse_nul: the embedded-NUL case that used to reach
+        # this arm is now refused before resolve() is called, and NUL was the only input
+        # that made resolve() raise ValueError. Kept rather than deleted: if a future
+        # CPython raises ValueError here for some other reason, this turns it into a
+        # PolicyError instead of letting it escape the module as an unrelated traceback.
+        # Unreachable today, deliberately, with the reason at the line - never a lowered
+        # coverage threshold (TESTING.md).
             raise PolicyError(f"{ENV_VAR} is set to {_echo(root)}, which is not a valid path: "
                                f"{exc}") from exc
         if not resolved_root.is_dir():
@@ -293,7 +299,13 @@ class AttachmentPolicy:
             # so it surfaces as a refusal rather than an uncaught ValueError escaping this
             # module wearing no relation to the attachment policy at all.
             resolved = candidate.resolve(strict=False)
-        except ValueError as exc:
+        except ValueError as exc:  # pragma: no cover - see _refuse_nul: the embedded-NUL case that used to reach
+        # this arm is now refused before resolve() is called, and NUL was the only input
+        # that made resolve() raise ValueError. Kept rather than deleted: if a future
+        # CPython raises ValueError here for some other reason, this turns it into a
+        # PolicyError instead of letting it escape the module as an unrelated traceback.
+        # Unreachable today, deliberately, with the reason at the line - never a lowered
+        # coverage threshold (TESTING.md).
             raise PolicyError(f"{_echo(path)} is not a valid path: {exc}") from exc
         if not resolved.is_relative_to(self.root):
             raise PolicyError(
@@ -364,7 +376,13 @@ class DownloadPolicy:
                                     f"a valid path: it contains a NUL byte.")
         try:
             resolved_root = pathlib.Path(os.path.expanduser(root)).resolve(strict=False)
-        except ValueError as exc:
+        except ValueError as exc:  # pragma: no cover - see _refuse_nul: the embedded-NUL case that used to reach
+        # this arm is now refused before resolve() is called, and NUL was the only input
+        # that made resolve() raise ValueError. Kept rather than deleted: if a future
+        # CPython raises ValueError here for some other reason, this turns it into a
+        # PolicyError instead of letting it escape the module as an unrelated traceback.
+        # Unreachable today, deliberately, with the reason at the line - never a lowered
+        # coverage threshold (TESTING.md).
             raise PolicyError(f"{DOWNLOAD_ENV_VAR} is set to {_echo(root)}, which is not a "
                                f"valid path: {exc}") from exc
         if not resolved_root.is_dir():
@@ -427,7 +445,13 @@ class DownloadPolicy:
         target = self.root / candidate
         try:
             resolved = target.resolve(strict=False)
-        except ValueError as exc:
+        except ValueError as exc:  # pragma: no cover - see _refuse_nul: the embedded-NUL case that used to reach
+        # this arm is now refused before resolve() is called, and NUL was the only input
+        # that made resolve() raise ValueError. Kept rather than deleted: if a future
+        # CPython raises ValueError here for some other reason, this turns it into a
+        # PolicyError instead of letting it escape the module as an unrelated traceback.
+        # Unreachable today, deliberately, with the reason at the line - never a lowered
+        # coverage threshold (TESTING.md).
             raise PolicyError(f"{_echo(filename)} is not a valid path: {exc}") from exc
         if not resolved.is_relative_to(self.root):
             raise PolicyError(
