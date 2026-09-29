@@ -5,6 +5,7 @@ attachments from: a stranger's message could overwrite a real file there, or sim
 one a model might later attach as if the user meant to send it.
 """
 import pytest
+from _platform import requires_symlinks
 
 from csa_google_gmail_calendar._attachments import (
     AttachmentPolicy,
@@ -37,6 +38,7 @@ def test_an_absolute_filename_is_refused(root):
         DownloadPolicy(str(root)).resolve("/etc/passwd")
 
 
+@requires_symlinks
 def test_a_symlinked_subdirectory_escape_is_refused_on_the_resolved_path(root, tmp_path):
     (tmp_path / "outside").mkdir()
     (root / "escape").symlink_to(tmp_path / "outside")

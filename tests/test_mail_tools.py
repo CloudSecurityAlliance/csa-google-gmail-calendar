@@ -20,6 +20,7 @@ brief's literal fixtures assumed - see task-11-report.md for the full account:
 import base64
 
 import pytest
+from _platform import requires_symlinks
 
 from csa_google_gmail_calendar import policy
 from csa_google_gmail_calendar.backend import FakeBackend
@@ -487,6 +488,7 @@ def test_get_attachment_without_a_configured_dir_refuses_with_the_variable_name(
         _call(s, "get_attachment", message_id="m1", attachment_id="att-1", filename="a.txt")
 
 
+@requires_symlinks
 def test_get_attachment_refuses_a_symlinked_escape_even_without_dotdot(tmp_path):
     """`DownloadPolicy.resolve`'s own containment lesson, applied on the write side too: the
     check must run on the RESOLVED path, because a symlink can point outside the root under a

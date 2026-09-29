@@ -102,7 +102,7 @@ class TestDefaultVersusExplicit:
 
         assert policy.root is None
         assert "CSA_GGC_ATTACH_DIR" in policy.warning
-        assert blocker.read_text() == "I am a file, not a directory", "must not be touched"
+        assert blocker.read_text(encoding="utf-8") == "I am a file, not a directory", "must not be touched"
 
 
 class TestTheDisjointnessRefusalSaysWhichPathYouChose:

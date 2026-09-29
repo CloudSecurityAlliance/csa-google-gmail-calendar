@@ -46,7 +46,7 @@ def test_readme_tool_table_matches_the_live_registry_exactly():
     policy."""
     p = policy.Policy(frozenset(policy.ALL_CAPABILITIES))
     registered = {t.name for t in create_server(backend=None, policy=p)._tool_manager.list_tools()}
-    documented = _readme_tools_table_names(README.read_text())
+    documented = _readme_tools_table_names(README.read_text(encoding="utf-8"))
     assert registered == documented, (
         f"registered but missing from the table: {sorted(registered - documented)}; "
         f"in the table but no longer registered: {sorted(documented - registered)}")
@@ -55,8 +55,8 @@ def test_readme_tool_table_matches_the_live_registry_exactly():
 def test_every_env_var_the_code_reads_is_in_the_readme():
     used: set[str] = set()
     for f in SRC.rglob("*.py"):
-        used |= set(re.findall(r'"(CSA_GGC_[A-Z_]+)"', f.read_text()))
-    readme = README.read_text()
+        used |= set(re.findall(r'"(CSA_GGC_[A-Z_]+)"', f.read_text(encoding="utf-8")))
+    readme = README.read_text(encoding="utf-8")
     missing = {v for v in used if v not in readme}
     assert not missing, f"undocumented environment variables: {sorted(missing)}"
 
@@ -64,11 +64,11 @@ def test_every_env_var_the_code_reads_is_in_the_readme():
 def test_every_env_var_the_readme_documents_is_actually_read_somewhere():
     """The reverse direction - a documented variable this codebase never reads is a promise
     the README makes that the code cannot keep."""
-    readme = README.read_text()
+    readme = README.read_text(encoding="utf-8")
     documented = set(re.findall(r"(CSA_GGC_[A-Z_]+)", readme))
     used: set[str] = set()
     for f in SRC.rglob("*.py"):
-        used |= set(re.findall(r'"(CSA_GGC_[A-Z_]+)"', f.read_text()))
+        used |= set(re.findall(r'"(CSA_GGC_[A-Z_]+)"', f.read_text(encoding="utf-8")))
     phantom = documented - used
     assert not phantom, f"README documents variables nothing reads: {sorted(phantom)}"
 
@@ -78,7 +78,7 @@ def test_todo_md_mentions_the_first_implementation_plan_is_complete_or_open_item
     set) - but this repo's own convention (CLAUDE.md: 'a new top-level doc gets a row... any
     work you leave open gets a line in TODO.md') means TODO.md must at minimum exist and be
     non-empty after this task, the same bar every prior task in this plan held itself to."""
-    todo = (pathlib.Path(__file__).parent.parent / "TODO.md").read_text()
+    todo = (pathlib.Path(__file__).parent.parent / "TODO.md").read_text(encoding="utf-8")
     assert todo.strip()
 
 
@@ -86,5 +86,5 @@ def test_claude_md_no_longer_claims_nothing_is_implemented():
     """CLAUDE.md predates any code in this repo and said so explicitly ('There is no src/.
     Nothing is implemented.') - a stale claim like that is exactly the kind of drift this test
     file exists to catch project-wide, not only for the tool table."""
-    claude_md = (pathlib.Path(__file__).parent.parent / "CLAUDE.md").read_text()
+    claude_md = (pathlib.Path(__file__).parent.parent / "CLAUDE.md").read_text(encoding="utf-8")
     assert "Nothing is implemented" not in claude_md

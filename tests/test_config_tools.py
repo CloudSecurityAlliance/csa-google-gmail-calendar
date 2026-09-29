@@ -1,6 +1,7 @@
 """`describe_configuration`, `report_a_problem`, and the flavour machinery behind them
 (`_flavours.py`). `demonstration_plan` has its own file (`test_demo.py`)."""
 import pytest
+from _platform import requires_chmod_read_removal
 
 from csa_google_gmail_calendar import policy
 from csa_google_gmail_calendar.mcp import _flavours, create_server
@@ -39,6 +40,22 @@ def test_describe_configuration_reports_no_granted_scopes_for_an_unreadable_toke
     assert out["scopes_sufficient"] is None
 
 
+@requires_chmod_read_removal
+def test_describe_configuration_survives_a_token_path_that_is_a_directory(
+        tmp_path, monkeypatch):
+    """The same `OSError` branch as the chmod test above, reached by the other trigger its
+    docstring names - "a directory where a file was expected". Unlike chmod, this precondition
+    can be built on every platform, so this is the test that actually runs on Windows."""
+    token_path = tmp_path / "token.json"
+    token_path.mkdir()
+    monkeypatch.setenv("CSA_GGC_TOKEN_PATH", str(token_path))
+    server = create_server(backend=None, policy=policy.Policy())
+    out = _call(server, "describe_configuration")
+    assert out["granted_scopes"] is None
+    assert out["scopes_sufficient"] is None
+
+
+@requires_chmod_read_removal
 def test_describe_configuration_reports_no_granted_scopes_when_the_token_file_is_unreadable(
         tmp_path, monkeypatch):
     """`_granted_scopes` must catch `OSError` alongside `ValueError`/`GoogleAuthError` - a file
@@ -48,7 +65,10 @@ def test_describe_configuration_reports_no_granted_scopes_when_the_token_file_is
     token_path.write_text('{"refresh_token": "r", "client_id": "c", "client_secret": "s", '
                          '"token_uri": "https://oauth2.googleapis.com/token", "scopes": []}')
     # POSIX-only: chmod bits are a no-op for the owner on Windows (auth.py's own note on the
-    # same limitation) - this CI matrix is ubuntu-only, so that is a known, accepted gap here.
+    # same limitation). The CI matrix is no longer ubuntu-only, so "accepted gap" is no
+    # longer a thing this comment may say on its own - the marker above skips this where the
+    # precondition cannot be built, and the directory variant below covers the same `OSError`
+    # branch on every platform so the skip costs no coverage.
     token_path.chmod(0o000)
     monkeypatch.setenv("CSA_GGC_TOKEN_PATH", str(token_path))
     try:

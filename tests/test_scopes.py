@@ -80,7 +80,7 @@ def test_every_scope_in_the_discovery_documents_is_ranked_or_excluded_by_name():
     """
     all_scopes: set[str] = set()
     for path in SPECS:
-        doc = json.loads(path.read_text())
+        doc = json.loads(path.read_text(encoding="utf-8"))
         all_scopes.update(_walk(doc.get("resources") or {}))
 
     known = set(scopes.RANK) | scopes.UNRANKED

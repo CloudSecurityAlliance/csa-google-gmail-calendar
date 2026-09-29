@@ -78,7 +78,7 @@ def main() -> int:
         if not path.exists():
             print(f"missing spec: {path}", file=sys.stderr)
             return 1
-        doc = json.loads(path.read_text())
+        doc = json.loads(path.read_text(encoding="utf-8"))
         meta[api] = (doc.get("id"), doc.get("revision"))
         for family, method_name, m in walk(doc.get("resources") or {}):
             # RANK/UNRANKED in scopes.py key on the full scope URL (including
