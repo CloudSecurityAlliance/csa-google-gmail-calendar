@@ -54,7 +54,7 @@ def main() -> int:
     md = "\n".join(lines)
 
     readme = ROOT / "README.md"
-    text = readme.read_text()
+    text = readme.read_text(encoding="utf-8")
     start, end = "<!-- TOOLS:START -->", "<!-- TOOLS:END -->"
     if start not in text or end not in text:
         print(md)

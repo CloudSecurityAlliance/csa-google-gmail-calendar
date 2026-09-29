@@ -226,8 +226,13 @@ class AttachmentPolicy:
                 f"attachments are disabled: no attachment directory is configured. Set "
                 f"{ENV_VAR} to a directory this server may read files from, and only files "
                 f"under it can be attached.")
-        candidate = pathlib.Path(os.path.expanduser(path))
-        if not candidate.is_absolute():
+        expanded = os.path.expanduser(path)
+        candidate = pathlib.Path(expanded)
+        # See the note in `DownloadPolicy.resolve`: on Windows a leading-separator path is
+        # not `is_absolute()`, so it was joined onto the root and the join silently threw the
+        # root away. The containment check below caught the result either way; treating it as
+        # absolute here just stops the join from producing a path nobody asked for.
+        if not (candidate.is_absolute() or os.path.isabs(expanded)):
             candidate = self.root / candidate
         try:
             # strict=False so a MISSING file reaches the readable error below rather than
@@ -349,7 +354,16 @@ class DownloadPolicy:
                 f"{DOWNLOAD_ENV_VAR} to a directory this server may write downloaded "
                 f"attachments to.")
         candidate = pathlib.Path(filename)
-        if candidate.is_absolute() or ".." in candidate.parts:
+        # `os.path.isabs` AS WELL AS `Path.is_absolute`, and the difference is only visible
+        # on Windows: `WindowsPath("/etc/passwd").is_absolute()` is False, because pathlib
+        # wants a drive letter before it calls a path absolute, while `ntpath.isabs` calls a
+        # leading separator absolute. Without the first check this guard did not fire on
+        # Windows for exactly the shape it exists to refuse, and `root / Path("/etc/passwd")`
+        # discards the root entirely - it evaluates to `C:\etc\passwd`. The containment check
+        # below still refused it, so nothing escaped, but the outright refusal this docstring
+        # promises was inert on one platform (csa-google-gmail-calendar#29). On POSIX
+        # `os.path.isabs` IS `posixpath.isabs`, so nothing changes there.
+        if os.path.isabs(filename) or candidate.is_absolute() or ".." in candidate.parts:
             raise PolicyError(
                 f"{filename!r} is an invalid attachment filename (must be a plain relative "
                 f"name, no path separators or '..'). Refused rather than guessing what was "

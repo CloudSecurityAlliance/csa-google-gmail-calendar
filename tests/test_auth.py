@@ -6,6 +6,7 @@ capability set instead of a read_only flag.
 """
 import json
 import os
+import re
 
 import pytest
 
@@ -405,7 +406,7 @@ def test_cached_expired_token_is_refreshed_and_persisted(tmp_path, monkeypatch):
 
     result = auth.load_cached_credentials(str(token), _required())
     assert result is creds and creds.refreshed is True
-    assert token.read_text() == '{"token": "fake"}'          # refreshed token persisted
+    assert token.read_text(encoding="utf-8") == '{"token": "fake"}'          # refreshed token persisted
 
 
 def test_cached_unrefreshable_token_raises(tmp_path, monkeypatch):
@@ -480,7 +481,7 @@ def test_load_credentials_refreshes_an_expired_cached_token_without_running_the_
     result = auth.load_credentials(_client_secrets(tmp_path), str(token), _required())
 
     assert result is cached and cached.refreshed is True
-    assert token.read_text() == '{"token": "fake"}'          # refreshed token persisted
+    assert token.read_text(encoding="utf-8") == '{"token": "fake"}'          # refreshed token persisted
 
 
 # --- token-file hardening -------------------------------------------------------------------
@@ -517,7 +518,7 @@ def test_a_preexisting_looser_mode_is_hardened_before_content_is_written(tmp_pat
     auth._write_token(str(token), FakeCreds(valid=True))
 
     assert auth.file_is_owner_only(str(token)) is True
-    assert token.read_text() == '{"token": "fake"}'
+    assert token.read_text(encoding="utf-8") == '{"token": "fake"}'
 
 
 # --- Fix round 1, item 2: the write must be atomic (temp file + os.replace) -----------------
@@ -528,7 +529,7 @@ def test_write_token_leaves_no_temp_file_behind_on_success(tmp_path):
     auth._write_token(str(token), FakeCreds(valid=True))
     leftovers = [p.name for p in tmp_path.iterdir() if p.name.startswith(".token-")]
     assert leftovers == []
-    assert token.read_text() == '{"token": "fake"}'
+    assert token.read_text(encoding="utf-8") == '{"token": "fake"}'
 
 
 def test_write_token_temp_file_is_created_in_the_same_directory(tmp_path, monkeypatch):
@@ -563,7 +564,7 @@ def test_a_failed_write_leaves_the_previous_token_file_untouched(tmp_path):
     with pytest.raises(RuntimeError):
         auth._write_token(str(token), _ExplodingCreds())
 
-    assert token.read_text() == "old-good-token"          # untouched, not truncated
+    assert token.read_text(encoding="utf-8") == "old-good-token"          # untouched, not truncated
     leftovers = [p.name for p in tmp_path.iterdir() if p.name.startswith(".token-")]
     assert leftovers == []                                 # temp file cleaned up on failure
 
@@ -582,7 +583,7 @@ def test_a_failed_write_whose_cleanup_also_fails_still_raises_the_original_error
     with pytest.raises(RuntimeError, match="boom mid-write"):
         auth._write_token(str(token), _ExplodingCreds())
 
-    assert token.read_text() == "old-good-token"          # still untouched
+    assert token.read_text(encoding="utf-8") == "old-good-token"          # still untouched
 
 
 def test_symlinked_token_path_is_refused(tmp_path):
@@ -637,7 +638,7 @@ def test_missing_client_secrets_names_the_path_and_the_env_var(tmp_path):
 def test_client_secrets_that_is_not_json_names_the_path(tmp_path):
     bad = tmp_path / "client_secret.json"
     bad.write_text("{not json")
-    with pytest.raises(AuthError, match=str(bad)):
+    with pytest.raises(AuthError, match=re.escape(str(bad))):
         auth.read_client_secrets(str(bad))
 
 
@@ -648,7 +649,7 @@ def test_client_secrets_unreadable_for_a_reason_other_than_missing_names_the_pat
     escaping from inside this function."""
     a_directory = tmp_path / "client_secret.json"
     a_directory.mkdir()          # open() on a directory raises IsADirectoryError, an OSError
-    with pytest.raises(AuthError, match=f"Could not read.*{a_directory}"):
+    with pytest.raises(AuthError, match=f"Could not read.*{re.escape(str(a_directory))}"):
         auth.read_client_secrets(str(a_directory))
 
 
@@ -715,14 +716,14 @@ def test_client_project_id_never_raises_for_an_unreadable_directory(tmp_path):
 def test_write_token_records_the_client_project_when_given_one(tmp_path):
     token = tmp_path / "token.json"
     auth._write_token(str(token), FakeCreds(valid=True), "my-fake-project-123")
-    written = json.loads(token.read_text())
+    written = json.loads(token.read_text(encoding="utf-8"))
     assert written["client_project"] == "my-fake-project-123"
 
 
 def test_write_token_omits_client_project_when_none_is_known(tmp_path):
     token = tmp_path / "token.json"
     auth._write_token(str(token), FakeCreds(valid=True))
-    written = json.loads(token.read_text())
+    written = json.loads(token.read_text(encoding="utf-8"))
     assert "client_project" not in written
 
 
@@ -734,7 +735,7 @@ def test_write_token_preserves_a_previously_recorded_project_across_a_refresh_re
     token = tmp_path / "token.json"
     token.write_text('{"token": "old", "client_project": "my-fake-project-123"}')
     auth._write_token(str(token), FakeCreds(valid=True))          # no client_project passed
-    written = json.loads(token.read_text())
+    written = json.loads(token.read_text(encoding="utf-8"))
     assert written["client_project"] == "my-fake-project-123"
 
 
@@ -742,7 +743,7 @@ def test_write_token_an_explicit_client_project_overrides_the_stored_one(tmp_pat
     token = tmp_path / "token.json"
     token.write_text('{"token": "old", "client_project": "stale-fake-project"}')
     auth._write_token(str(token), FakeCreds(valid=True), "fresh-fake-project")
-    written = json.loads(token.read_text())
+    written = json.loads(token.read_text(encoding="utf-8"))
     assert written["client_project"] == "fresh-fake-project"
 
 
@@ -758,5 +759,5 @@ def test_load_credentials_records_the_client_project_on_first_consent(tmp_path, 
 
     auth.load_credentials(str(secrets), str(token), _required())
 
-    written = json.loads(token.read_text())
+    written = json.loads(token.read_text(encoding="utf-8"))
     assert written["client_project"] == "my-fake-project-123"

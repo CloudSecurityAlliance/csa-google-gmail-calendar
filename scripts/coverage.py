@@ -78,11 +78,11 @@ def google_tools() -> dict[str, set[str]]:
     out = {}
     for api, h in (("gmail", "gmailmcp"), ("calendar", "calendarmcp")):
         p = ROOT / f"research/captures/2026-09-01-{h}-tools-list.json"
-        out[api] = {t["name"] for t in json.loads(p.read_text())["result"]["tools"]}
+        out[api] = {t["name"] for t in json.loads(p.read_text(encoding="utf-8"))["result"]["tools"]}
     return out
 
 def connector_tools() -> dict[str, set[str]]:
-    d = json.loads((ROOT / "analysis/observed-mcp-tools.json").read_text())
+    d = json.loads((ROOT / "analysis/observed-mcp-tools.json").read_text(encoding="utf-8"))
     return {api: {t["name"] for t in d["servers"][f"connector_{api}"]["tools"]}
             for api in ("gmail", "calendar")}
 
@@ -224,7 +224,7 @@ def main() -> int:
         L.append(f"| {label} | {n} | {gcell} | {ccell} |")
     L.append("")
     md = "\n".join(L)
-    readme = ROOT / "README.md"; t = readme.read_text()
+    readme = ROOT / "README.md"; t = readme.read_text(encoding="utf-8")
     s, e = "<!-- COVERAGE:START -->", "<!-- COVERAGE:END -->"
     if s in t and e in t:
         t = t[:t.index(s)+len(s)] + "\n" + md + "\n" + t[t.index(e):]

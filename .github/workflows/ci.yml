@@ -40,6 +40,35 @@ jobs:
       # lowered number here.
       - run: python -m pytest --cov --cov-report=term-missing --cov-fail-under=100
 
+  test-windows:
+    name: the suite on Windows
+    runs-on: windows-latest
+    # Required, and deliberately NOT `continue-on-error`. The first Windows run of this
+    # suite found 15 failures across five root causes (#29) while every job above was
+    # green, because every job above is ubuntu. A passing ubuntu job is evidence about
+    # ubuntu. A job that cannot fail would have reported the same green for the same
+    # fifteen failures.
+    #
+    # One interpreter, not the five-version matrix: this job holds the platform axis
+    # honest and the version axis is already covered above. Widen it if a
+    # version-specific Windows defect ever appears.
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with: { python-version: "3.12" }
+      - run: pip install -e ".[dev]"
+      # NO COVERAGE GATE HERE, and the reason is structural rather than a concession.
+      # `auth.py` branches on `_WINDOWS` - an ACL reader and an `icacls` fallback on one
+      # side, `os.fchmod`/`os.chmod` on the other - so each platform necessarily leaves
+      # the other's branch unexecuted. auth.py says so itself at the `os.chmod` line: "a
+      # Windows-only test run cannot reach this line at all." 100% is reachable by the
+      # UNION of platforms, never by one of them, and the honest way to say that is to
+      # gate coverage where the suite runs completely (the ubuntu job above) rather than
+      # to set a second, lower number here. A lowered threshold is the thing this repo's
+      # testing docs refuse by name; this is not one, it is a different gate. What this
+      # job gates is simpler and still real: do the tests pass on Windows.
+      - run: python -m pytest -q
+
   security:
     runs-on: ubuntu-latest
     steps:
