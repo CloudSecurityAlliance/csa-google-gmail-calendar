@@ -135,7 +135,7 @@ def _http_error(status: int, message: str) -> HttpError:
     return HttpError(R(), body)
 
 
-def _boom(err: HttpError) -> "_Chain":
+def _boom(err: HttpError) -> _Chain:
     """A `_Chain` whose every terminal call raises `err` instead of recording a result -
     building the request never fails (matching the real discovery client, which only raises
     from `.execute()`), only the eventual `.execute()` does."""

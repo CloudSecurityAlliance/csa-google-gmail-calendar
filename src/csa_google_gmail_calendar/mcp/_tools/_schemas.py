@@ -32,8 +32,6 @@ from __future__ import annotations
 import base64
 import email
 import email.policy
-import sys
-from typing import Any
 
 # `pragma: no cover` on the `if`, which excludes BOTH arms - and that is the point. A one-arm
 # pragma is only ever right on half the matrix: the `else` was excluded for >=3.12, so 3.10 and
@@ -42,10 +40,10 @@ from typing import Any
 # re-runs a module-level import that already ran. Excluding the version fork entirely is the
 # honest statement: this is a compatibility shim, not logic, and neither arm is ever "missing
 # a test".
-if sys.version_info >= (3, 12):
-    from typing import TypedDict  # pragma: no cover
-else:
-    from typing_extensions import TypedDict  # pragma: no cover
+from typing import (
+    Any,
+    TypedDict,  # pragma: no cover
+)
 
 from ...mail import AttachmentRef, ParsedMessage
 

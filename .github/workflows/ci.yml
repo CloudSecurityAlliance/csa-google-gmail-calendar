@@ -15,7 +15,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
-        with: { python-version: "3.12" }
+        with: { python-version: "3.14" }
       - run: pip install -e ".[dev]"
       - run: ruff check .
       - run: mypy
@@ -26,7 +26,12 @@ jobs:
       matrix:
         # The floor of the support promise (`requires-python = ">=3.10"`, pyproject's own
         # classifiers 3.10-3.14) tested directly, not assumed from the floor alone.
-        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
+        # One row, because `requires-python = ">=3.14"` makes the others uninstallable -
+        # a matrix entry that cannot install is not coverage, it is a red job. This is the
+        # cost of the floor being a POLICY choice rather than a technical one: the versions
+        # this code still runs on are no longer tested, because it is no longer offered to
+        # them. Widen it again the moment the floor comes back down.
+        python-version: ["3.14"]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
@@ -55,7 +60,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
-        with: { python-version: "3.12" }
+        with: { python-version: "3.14" }
       - run: pip install -e ".[dev]"
       # NO COVERAGE GATE HERE, and the reason is structural rather than a concession.
       # `auth.py` branches on `_WINDOWS` - an ACL reader and an `icacls` fallback on one
@@ -74,7 +79,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
-        with: { python-version: "3.12" }
+        with: { python-version: "3.14" }
       # Deliberately unpinned: the point is to observe what a real `pip install
       # csa-google-gmail-calendar` resolves to today, not what a pinned closure nobody installs
       # resolves to. The same gate runs on the release path (release.yml), because a CVE

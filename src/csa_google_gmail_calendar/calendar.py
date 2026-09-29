@@ -15,7 +15,7 @@ turn `query_freebusy`'s busy intervals into the answer people actually asked for
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from .backend import _event_boundary, _parse_rfc3339
@@ -241,7 +241,7 @@ class Calendar:
             # Substituted for "Z" here to match how every other timestamp this server returns
             # is rendered, rather than leaving a "+00:00" outlier a model might read as a
             # different format.
-            return moment.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+            return moment.astimezone(UTC).isoformat().replace("+00:00", "Z")
 
         free: list[dict[str, str]] = []
         cursor = window_start

@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import copy
 from collections.abc import Callable
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any, Protocol
 
 from google.auth.credentials import Credentials
@@ -172,7 +172,7 @@ def _event_boundary(node: dict[str, Any] | None, *, context: str = "") -> dateti
         return _parse_rfc3339(node["dateTime"], context=context)
     if "date" in node:
         try:
-            return datetime.fromisoformat(node["date"]).replace(tzinfo=timezone.utc)
+            return datetime.fromisoformat(node["date"]).replace(tzinfo=UTC)
         except ValueError as exc:
             where = f" ({context})" if context else ""
             raise ValueError(f"not a valid RFC3339 date: {node['date']!r}{where}") from exc

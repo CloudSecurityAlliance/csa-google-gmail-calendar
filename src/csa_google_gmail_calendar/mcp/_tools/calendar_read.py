@@ -17,9 +17,6 @@ a registered-but-refusing tool.
 """
 from __future__ import annotations
 
-import sys
-from typing import Any, cast
-
 # `pragma: no cover` on the `if`, which excludes BOTH arms - and that is the point. A one-arm
 # pragma is only ever right on half the matrix: the `else` was excluded for >=3.12, so 3.10 and
 # 3.11 then reported the `if` arm uncovered instead. Whichever interpreter runs, exactly one arm
@@ -27,10 +24,11 @@ from typing import Any, cast
 # re-runs a module-level import that already ran. Excluding the version fork entirely is the
 # honest statement: this is a compatibility shim, not logic, and neither arm is ever "missing
 # a test".
-if sys.version_info >= (3, 12):
-    from typing import TypedDict  # pragma: no cover
-else:
-    from typing_extensions import TypedDict  # pragma: no cover
+from typing import (
+    Any,
+    TypedDict,  # pragma: no cover
+    cast,
+)
 
 from mcp.server import MCPServer
 
