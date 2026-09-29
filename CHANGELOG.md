@@ -3,7 +3,62 @@
 All notable changes to this project are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [Unreleased]
+## [0.5.1] - 2026-09-29
+### Fixed
+- **Two path guards were dead on Windows, each for a different reason, and both are
+  now version- and platform-proof.**
+
+  `DownloadPolicy.resolve` promises an absolute filename - a value taken from
+  whichever attachment part of a message a stranger wrote - is *"refused outright
+  rather than silently reinterpreted"*. It was not. `WindowsPath("/etc/passwd")
+  .is_absolute()` is `False` because pathlib wants a drive letter, so the guard fell
+  through and `root / Path("/etc/passwd")` evaluated to `C:\etc\passwd` - the join
+  discarding the root. Repaired with `os.path.isabs`, which then **broke again on
+  3.14**: Python 3.13 changed `ntpath.isabs` to require a drive letter too. Now
+  `_is_rooted()`, which tests for a leading separator directly. Measured `True` on
+  3.12 and 3.14 alike.
+
+  The embedded-NUL refusal had the same shape. It relied on `Path.resolve()` raising
+  `ValueError`, which 3.14 no longer does - so the refusal silently became "does not
+  exist". Now `_refuse_nul()`, an explicit check.
+
+  **Nothing escaped in either case** - the containment check on the resolved path
+  refused these inputs throughout. Both were first-of-two layers that existed and
+  did not run.
+
+- `Path.read_text()` used the locale encoding, which is cp1252 on Windows, and died
+  on a non-Latin-1 byte in this package's own source. All 25 call sites now pass
+  `encoding="utf-8"`.
+
+- A filesystem path handed to `pytest.raises(match=...)` is a regex, and a Windows
+  path begins `C:\Users` - `\U` is an incomplete escape, so the pattern failed to
+  compile before the assertion ran.
+
+### Changed
+- **The outgoing-attachment directory default moved to `~/CSA-Uploads`**, from
+  `~/Documents/CSA-Outbox`. On Windows the old default was wrong in a way nothing
+  reported: OneDrive's Known Folder Move redirects Documents by default,
+  `os.path.expanduser` string-joins `$HOME/Documents` regardless, and both paths
+  exist - so somebody told to create the outbox created it in the Documents they
+  could see while the server read one they could not.
+
+  **If you have files in `~/Documents/CSA-Outbox`, move them to `~/CSA-Uploads`.**
+  Nothing migrates them: the server still never creates or moves this directory,
+  because its existence is what turns attaching on.
+
+- A required `windows-latest` CI job now runs the suite on every pull request. Every
+  job before it was ubuntu, which is why the defects above went unobserved.
+### Changed
+- **Requires Python 3.14 or later** (`requires-python = ">=3.14"`, was `>=3.10`).
+
+  **This is breaking for anyone installing on 3.10-3.13, despite the patch version
+  number.** It is a policy choice rather than a technical one - the code runs on
+  3.10 - recorded as [DEC-025][dec025] with its costs and the rejected alternative
+  written down. The version number is a patch because nothing about the tool
+  surface changed; the installability change is called out here instead of being
+  implied by a digit.
+
+[dec025]: https://github.com/CloudSecurityAlliance-Internal/CINO-Platform-Engineering/blob/main/DECISIONS.md
 
 ### Changed
 - **The uploads directory default moved to `~/CSA-Uploads`**, from
