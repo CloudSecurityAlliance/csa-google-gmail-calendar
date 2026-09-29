@@ -3,6 +3,26 @@
 All notable changes to this project are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.5.0] - 2026-09-28
+
+### Added
+- **`report_a_problem` says whether you are out of date, and how you installed.** It
+  reported the installed version and never asked whether that version was current, so a
+  careful bug report could be written in detail against something fixed three releases ago —
+  the reporter's time first, the maintainer's second.
+
+  The report now carries the version with `(latest)` / `** OUT OF DATE — PyPI has X **` /
+  `(could not check PyPI)`, the **install route**, and the exact upgrade command for *that*
+  route — `pipx upgrade`, `uv tool upgrade`, `pip install --upgrade`, or `git pull` for a
+  working tree, where telling somebody to install over their own checkout would be wrong
+  advice and possibly destructive. The same fields are in the structured payload, so a
+  caller can act on them rather than parse prose.
+
+  **Where the check runs is the design.** Not at startup: a stdio server must not reach the
+  network before it has been asked to do anything. It runs only when a caller invokes
+  `report_a_problem`, which is the one moment the answer is worth a round trip.
+  ([#27](https://github.com/CloudSecurityAlliance/csa-google-gmail-calendar/pull/27))
+
 ## [0.4.0] - 2026-09-27
 
 ### Changed
