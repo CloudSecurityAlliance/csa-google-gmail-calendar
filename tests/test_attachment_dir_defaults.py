@@ -39,7 +39,7 @@ class TestTheDefaultsAreDisjointByConstruction:
         monkeypatch.delenv("CSA_GGC_DOWNLOAD_DIR", raising=False)
         monkeypatch.setenv("HOME", str(tmp_path))
         monkeypatch.setenv("USERPROFILE", str(tmp_path))
-        (tmp_path / "Documents" / "CSA-Outbox").mkdir(parents=True)
+        (tmp_path / "CSA-Uploads").mkdir()
         (tmp_path / "Downloads").mkdir()
 
         attach, download = from_env(), download_policy_from_env()

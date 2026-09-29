@@ -3,7 +3,7 @@
 #23 gave `CSA_GGC_ATTACH_DIR` and `CSA_GGC_DOWNLOAD_DIR` defaults under `~`, and a defaulted
 root that does not exist is **created**. That is right for a server starting up and wrong for a
 test run, and the difference is invisible at the call site - `cli.main([])` in
-`test_mcp_cli.py` goes down the serve path and made `~/Documents/CSA-Outbox` on the machine
+`test_mcp_cli.py` goes down the serve path and made a directory under `~` on the machine
 running the suite, which is how this was found.
 
 Redirecting HOME per-test would work and would have to be remembered by every future test that

@@ -101,8 +101,8 @@ def test_from_env_with_no_variable_uses_the_default_when_it_exists(tmp_path, mon
     monkeypatch.delenv("CSA_GGC_ATTACH_DIR", raising=False)
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("USERPROFILE", str(tmp_path))
-    outbox = tmp_path / "Documents" / "CSA-Outbox"
-    outbox.mkdir(parents=True)
+    outbox = tmp_path / "CSA-Uploads"
+    outbox.mkdir()
 
     policy = from_env()
 

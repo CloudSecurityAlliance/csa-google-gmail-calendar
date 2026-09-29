@@ -117,7 +117,7 @@ environment:
   CSA_GGC_CLIENT_SECRETS OAuth client secrets JSON (`login`/`authenticate` only; defaults to
                          ~/.csa_google_gmail_calendar/client_secret.json if that exists)
   CSA_GGC_ATTACH_DIR     directory outgoing mail may attach files from
-                         (default: ~/Documents/CSA-Outbox). NEVER created - if the default
+                         (default: ~/CSA-Uploads). NEVER created - if the default
                          does not exist, attaching is off and the server says so at startup.
                          Making that directory is how you turn sending files on, and it takes
                          effect on the next call rather than needing a restart.
