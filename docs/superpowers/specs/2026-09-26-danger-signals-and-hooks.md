@@ -468,13 +468,49 @@ Not `CSA_GGC_DOWNLOAD_DIR`. That directory is where a person puts things they as
 written so a signal can parse it is not something they asked for, and burying a wanted download among
 hundreds of them is a cost paid by the person for the tool's convenience.
 
-**Retention is a design question, not an implementation detail, and it is open.** The design spec also
-records that *"an `.eml` on disk is the complete message, which is a larger exposure than any API
-response this project otherwise handles."* A directory that accumulates complete messages indefinitely
-is that exposure, multiplied, and merely hiding it does not reduce it. What must be settled: whether an
-`.eml` is deleted after the signals that needed it have run, kept for a bounded window, or kept until
-something sweeps it — and whether the server states the directory's contents anywhere a person would
-look.
+**Retention, settled.** The design spec records that *"an `.eml` on disk is the complete message,
+which is a larger exposure than any API response this project otherwise handles."* A directory that
+accumulates complete messages indefinitely is that exposure multiplied, and hiding it does not reduce
+it.
+
+What makes an aggressive policy safe here is that **nothing in this directory is irreplaceable** — the
+tool can fetch the message again. There is therefore no recovery story to design, and no reason to keep
+anything longer than it is being used.
+
+**Two mechanisms, deliberately, and neither replaces the other:**
+
+1. **Delete after use.** An `.eml` is removed once the signals that needed it have run.
+2. **Sweep on write.** Every time the server writes to this directory it first removes any file in it
+   older than 24 hours.
+
+The second exists because the first fails. A crash, a kill, a power loss or an exception on an
+unexpected path leaves an orphan, and a cleanup that only runs on the success path cleans only the
+cases that did not need cleaning. The sweep is the backstop, and tying it to writing means there is no
+scheduler, no background thread and no separate lifecycle to get wrong: cleanup is a side effect of the
+activity that creates the mess, so a busy mailbox cleans often and an idle one has nothing to clean.
+
+**What "boring and deterministic" has to mean in the implementation**, because each of these is a way a
+delete routine goes wrong:
+
+- **Split the decision from the deletion.** *Which files are too old* is a pure function of a listing
+  and a clock — trivially testable without waiting a day or stubbing time badly. *Deleting them* is
+  I/O that is allowed to fail.
+- **`mtime`, not creation time.** Creation time is not portable: on Windows `st_ctime` is creation, on
+  POSIX it is inode change. `mtime` means the same thing on both.
+- **The sweep must never fail the operation it is attached to.** If a delete is refused — Windows will
+  not unlink a file another process holds open — the write that triggered the sweep still has to
+  succeed. Log it, skip it, continue; the next sweep gets it.
+- **Tolerate the race.** Two clients can run two servers, each sweeping. A file that vanished between
+  the listing and the unlink is a success, not an error. The 24-hour threshold is also far longer than
+  any analysis, so a sweep cannot plausibly remove a file still in use.
+- **Confine it absolutely.** Non-recursive, no symlink traversal, and only files matching the pattern
+  this server writes — not everything present. A deletion routine aimed at a directory is a dangerous
+  thing to get subtly wrong, and the cost of being narrow is nothing.
+
+**The sweep applies to this directory only.** `~/.csa_google_gmail_calendar/` holds the token and the
+observation history, and must never be swept: its contents are not replaceable and its value is that it
+persists. The two directories are adjacent and one of them is safe to empty at any time — which is
+exactly why they are two.
 
 **Scope held deliberately narrow:** per-machine. Whether a *shared* registry should exist is
 deliberately not decided here, because a central record of "which domains CSA corresponds with, and
