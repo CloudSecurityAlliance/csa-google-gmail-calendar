@@ -355,23 +355,33 @@ authentication rather than to addresses.
 No new dependency: all of it is headers the thread already contains, so it stays testable on `.eml`
 fixtures with no network and no credentials.
 
-### B. DNS is two capabilities, both off by default
+### B. DNS stays two capabilities — §3's names, and why the split is worth enforcing
 
 **Modifies §2, Tiers D and X, and §5 step 5.**
 
-Tiers D and X are both "DNS-ish" and they are not the same consent. They become two capabilities,
-declared in `policy.py` and left **out** of `DEFAULT_ENABLED`, so the existing fail-closed tests in
-`tests/test_mcp_capabilities.py` catch either one if it is ever wired to a tool without being
-declared — the same guard that already protects `mail.delete` and `calendar.delete`.
+**Correction to this amendment as first written (same day):** B originally proposed "two
+capabilities" as if new, under the names `mail.analysis.dns` and `mail.analysis.registry`. §3
+already specifies the capability set — `analysis.local`, `analysis.thread`, `analysis.mailbox`,
+`analysis.dns`, `analysis.external`, the last three off by default — and already separates D from X.
+So the split existed, the names were wrong, and the invented ones contradicted §3 in this same file.
+**§3's names are canonical. Tier D is `analysis.dns`; Tier X is `analysis.external`.** Recorded
+rather than quietly corrected, because the error is instructive: the self-review before this was
+committed checked §6's prohibitions and never checked names against §3, which is a review that tests
+three specific claims and calls itself a consistency check.
 
-| Capability | Tier | Covers | Discloses |
+What B does contribute is two arguments §3 states the conclusion of but not the reasoning for.
+
+**Why the separation is worth enforcing, not just documenting.** One flag cannot express the posture
+a reasonable person wants: MX and SPF checks on every message, while refusing to tell a registry who
+they email. Both capabilities therefore stay **out** of `DEFAULT_ENABLED` in `policy.py`, so the
+existing fail-closed tests in `tests/test_mcp_capabilities.py` catch either one if it is ever wired
+to a tool without being declared — the same guard that already protects `mail.delete` and
+`calendar.delete`.
+
+| Tier | Capability (§3) | Covers | Discloses |
 |---|---|---|---|
-| `mail.analysis.dns` | D | MX present at all; SPF/DMARC records and strictness; DKIM selector resolvable | nothing beyond ordinary DNS |
-| `mail.analysis.registry` | X | registration age (RDAP, WHOIS fallback); registrar; privacy-proxied; CT first-seen | **which domains you correspond with, to whoever answers** |
-
-One flag cannot express the posture a reasonable person wants: MX and SPF checks on every message,
-while refusing to tell a registry who they email. §2 already separates the tiers for exactly this
-reason; this makes the separation enforceable rather than documentary.
+| D | `analysis.dns` | MX present at all; SPF/DMARC records and strictness; DKIM selector resolvable | nothing beyond ordinary DNS |
+| X | `analysis.external` | registration age (RDAP, WHOIS fallback); registrar; privacy-proxied; CT first-seen | **which domains you correspond with, to whoever answers** |
 
 A second reason, which is operational rather than about consent: **D is reliable and X is not.** SPF
 and MX answers are cheap, cacheable and deterministic in the sense that matters; RDAP is rate-limited,
@@ -430,6 +440,75 @@ tells a registry who CSA emails.
 exist is deliberately not decided here, because a central record of "which domains CSA corresponds
 with, and since when" is a map of CSA's correspondents and engages `DATA-BOUNDARIES.md` and
 `SOURCE-OF-TRUTH.md`. Filed as CINO-Platform-Engineering#170.
+
+
+### D. Every resolver is an extension point, and providers are not evaluators
+
+**Modifies §3. Generalises a sentence §3 already contains.**
+
+§3 ends with: *"This is also how a 'domain check hook' gets built once rather than per-signal. Domain
+age, registrar, MX presence and CT first-seen are four signals sharing one resolver, one cache, and
+one disclosure decision. **The hook is the resolver; the signals are its callers.**"*
+
+That is stated for DNS. It is true of every lookup in the design, and saying so changes what the
+architecture is for.
+
+**The resolvers, named.** Each is a place the analyser asks a question and gets data back:
+
+| Resolver | The question | Tier |
+|---|---|---|
+| headers | — (already in hand) | L, T |
+| correspondence | have we spoken with this address or domain, when last, how often | M |
+| content | what does this body or attachment contain | L, and `get_attachment` |
+| domain | MX, SPF, DMARC, DKIM selector | D |
+| registry | registration age, registrar, CT first-seen | X |
+
+A signal declares a need; a resolver satisfies it. Nothing in a signal says *who* satisfies it, which
+is what makes a resolver replaceable.
+
+**Why that matters: "have we ever spoken" has more than one right answer.** The local mailbox index
+can answer it. So can Customer360, which already holds a daily copy of Zendesk and other sources. So
+can a member's own CRM — and for them the useful question is not "have we corresponded" but **"is
+this address a customer"**, which no mailbox can answer and their database answers instantly. Same
+declared need, three providers, and the signal is indifferent to which one is present.
+
+#### Two kinds of extension, and conflating them would be the mistake
+
+| | A **provider** | An **evaluator** |
+|---|---|---|
+| Shape | question in, **data** out | data in, **findings** out |
+| Changes | what the analyser **knows** | what the analyser **concludes** |
+| Examples | internal CRM, Customer360, threat-intel feed, a DNS cache | policy engine, AV scanner, prompt-injection detector |
+| A wrong answer | **poisons every signal downstream of it, silently** | produces one bad finding, visibly |
+
+That last row is the reason they cannot share one interface. A provider that returns "yes, four years
+of correspondence" for a domain first seen yesterday defeats Tier M, Tier X and the thread checks at
+once, and nothing downstream can tell. An evaluator that returns a wrong finding is wrong *in the
+output*, where a reader sees it next to the others. Same plug, very different trust, so: **a provider
+states its source in every answer, and a finding derived from a provider names it.** A reader must be
+able to see that "known correspondent for four years" came from a CRM rather than from the mailbox.
+
+#### What this does not change
+
+- **§4's output contract still binds.** An evaluator returns findings in the one vocabulary —
+  *abnormal*, against a named baseline. §6 forbids scores, severity ladders and verdicts, and an
+  external engine will want to return all three. Either the boundary translates or the discipline
+  leaks away at the first integration.
+- **§3's capability model still gates.** A provider inherits the tier of the question it answers: a
+  CRM answering a Tier M question is off unless `analysis.mailbox` is enabled, because the *question*
+  is the disclosure, not the implementation. A member's CRM may be less disclosing than reading the
+  mailbox — it is still the same question, and the person still chose.
+- **The cascade still holds.** Cheap gates expensive. A provider does not get to be consulted on
+  every message because it happens to be fast.
+
+#### Scope
+
+Not built now. Steps 1–3 need exactly one resolver — headers — and building a plug-in system against
+a single internal caller designs for imagined consumers. The sequence is: build the resolvers as
+plain internal seams with declared needs, let Tiers M/D/X prove the seam is in the right place, and
+only then publish it. Tracked as CINO-Platform-Engineering#171, which now covers both hook kinds; the
+first implementation plan should leave the resolver boundary clean enough that #171 is a publication
+rather than a refactor.
 
 ### Also noted, not amended
 
