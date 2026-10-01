@@ -322,3 +322,118 @@ out of band.
 **A blocker.** Nothing here should stop mail being read or sent on a heuristic. A control that
 interrupts ordinary work gets disabled, and a disabled control protects nothing — the goal is that
 a person reads one sentence and picks up the phone, not that the software refuses.
+
+## Amendment, 2026-10-01 — three refinements, and one measurement that changed a premise
+
+Appended rather than edited in place, following this project family's `DECISIONS.md` discipline: the
+original above is what was agreed on 2026-09-26, and a reader should be able to see what moved. Each
+item below names the section it modifies.
+
+### A. Tier T is thread-wide header differential, not only participant drift
+
+**Modifies §2, Tier T, and §5 step 3.**
+
+Tier T was scoped to the participant set — #16's incident, where a compromised real account replies
+and the *other* recipients are swapped to a lookalike domain. That remains the highest-value check in
+the tier. But the tier is the only place a *differential* is possible at all, and limiting it to
+recipients leaves the rest of the thread's headers unexamined when the comparison is already in hand.
+
+Tier T therefore also covers, across the messages of one thread:
+
+- **`References` / `In-Reply-To` chain integrity** — a break, or a parent outside the thread
+- **`Message-ID` domain changing mid-thread** while the participants appear unchanged
+- **`Reply-To` appearing partway through** a thread that had none
+- **`Return-Path` diverging from `From` only in later messages**
+- **Subject mutation** beyond accumulated `Re:`/`Fwd:` prefixes
+- **The `Authentication-Results` verdict weakening across the thread** — pass, then neutral or none
+
+The last one is the reason this belongs in T rather than L. Every message can pass its own Tier L
+check while the *trend* is the signal, and no message-scoped check can see a trend. It is the same
+argument #16 makes about the cast being forged while each message is authentic, applied to
+authentication rather than to addresses.
+
+No new dependency: all of it is headers the thread already contains, so it stays testable on `.eml`
+fixtures with no network and no credentials.
+
+### B. DNS is two capabilities, both off by default
+
+**Modifies §2, Tiers D and X, and §5 step 5.**
+
+Tiers D and X are both "DNS-ish" and they are not the same consent. They become two capabilities,
+declared in `policy.py` and left **out** of `DEFAULT_ENABLED`, so the existing fail-closed tests in
+`tests/test_mcp_capabilities.py` catch either one if it is ever wired to a tool without being
+declared — the same guard that already protects `mail.delete` and `calendar.delete`.
+
+| Capability | Tier | Covers | Discloses |
+|---|---|---|---|
+| `mail.analysis.dns` | D | MX present at all; SPF/DMARC records and strictness; DKIM selector resolvable | nothing beyond ordinary DNS |
+| `mail.analysis.registry` | X | registration age (RDAP, WHOIS fallback); registrar; privacy-proxied; CT first-seen | **which domains you correspond with, to whoever answers** |
+
+One flag cannot express the posture a reasonable person wants: MX and SPF checks on every message,
+while refusing to tell a registry who they email. §2 already separates the tiers for exactly this
+reason; this makes the separation enforceable rather than documentary.
+
+A second reason, which is operational rather than about consent: **D is reliable and X is not.** SPF
+and MX answers are cheap, cacheable and deterministic in the sense that matters; RDAP is rate-limited,
+inconsistently formatted per registry, and its most useful field is often better obtained from
+certificate transparency than from RDAP at all. Behind one flag, the reliable half inherits the
+unreliable half's failure modes, and the first timeout teaches someone to switch all of it off.
+
+No new default-on network call enters the product. With neither capability enabled the analyser is
+exactly what §5 steps 1–3 build: headers only.
+
+### C. The store is a history, not a cache
+
+**Modifies §2, Tiers D and X. New.**
+
+Measured 2026-10-01: `cloudsecurityalliance.org` publishes one MX, `smtp.google.com`, and per the
+domain owner it has changed **once in roughly fifteen years**.
+
+A premise correction belongs here, because it was nearly built on. Google-hosted zones default to a
+300-second TTL, and most of the domains sampled (`google.com`, `github.com`,
+`cloudsecurityalliance.org`) publish MX, SPF and DMARC at 300s. **TTL is not a churn signal.** It is
+the operator saying they want to be *able* to change quickly; it says nothing about how often they do.
+Reading 300s as "this changes often" inverts the actual property.
+
+The actual property is what makes the signal valuable: if a domain's own mail records change about
+once a decade, **any observed change is a finding** rather than noise to be tuned away. A partner's MX
+moving, or DMARC weakening from `p=reject`, is the shape of a domain takeover.
+
+Which means the current value is close to worthless on its own. "This domain has MX `smtp.google.com`"
+tells a reader nothing. "It had that for fifteen years and changed last Tuesday" tells them everything.
+**The stored history is the product**, and that is not a TTL cache — a TTL cache's job is to forget,
+and forgetting is precisely the failure mode here.
+
+So the store holds, per record: **first observation, current value, and a change log**. TTL is a floor
+on refresh frequency, never the retention policy.
+
+**Two kinds of record, compared by different rules.** This distinction is load-bearing, and getting it
+wrong would bury the signal:
+
+| | Changes | On change |
+|---|---|---|
+| **The domain's own records** — MX hosts, the SPF record *text*, DMARC `p=`/`sp=`/`aspf`/`adkim` | about once a decade | **a finding** |
+| **The delegated include tree** — what `include:sendgrid.net` resolves to | continuously, by third parties | routine; compare **structurally** (an include added or removed), never byte-wise |
+
+Measured on `github.com`: 8 `include:` terms resolving to 9 further records operated by 8 different
+companies — Outlook, two Google netblocks, Zendesk, Salesforce, Mailchimp, Marketo, SendGrid — with
+TTLs from 300 to 3600 and one nested include. SendGrid rotating a netblock changes GitHub's effective
+SPF without GitHub touching anything. Byte-comparing the resolved chain would fire constantly, and a
+check that fires constantly is the "tuned threshold becomes a green tick" failure §6 already forbids.
+
+**Retention differs by tier, following the disclosure.** Tier D answers are cheap to refresh and change
+legitimately. Tier X's registration age is near-immutable once known — a domain's creation date does
+not change — so it caches approximately forever, which is also what minimises how often the product
+tells a registry who CSA emails.
+
+**Scope held deliberately narrow:** per-machine, surviving restarts. Whether a *shared* registry should
+exist is deliberately not decided here, because a central record of "which domains CSA corresponds
+with, and since when" is a map of CSA's correspondents and engages `DATA-BOUNDARIES.md` and
+`SOURCE-OF-TRUTH.md`. Filed as CINO-Platform-Engineering#170.
+
+### Also noted, not amended
+
+CINO-Platform-Engineering#171 asks whether §1's hook table should be published as an extension contract
+so a member can attach their own policy engine. That issue argues for building the internal signals
+against the table first: a contract derived from a table nothing has exercised will specify the wrong
+things. Nothing in this spec changes for it.
