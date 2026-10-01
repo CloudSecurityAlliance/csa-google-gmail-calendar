@@ -323,34 +323,51 @@ out of band.
 interrupts ordinary work gets disabled, and a disabled control protects nothing — the goal is that
 a person reads one sentence and picks up the phone, not that the software refuses.
 
-## Amendment, 2026-10-01 — three refinements, and one measurement that changed a premise
+## Amendment, 2026-10-01 — four refinements, and one measurement that changed a premise
 
 Appended rather than edited in place, following this project family's `DECISIONS.md` discipline: the
 original above is what was agreed on 2026-09-26, and a reader should be able to see what moved. Each
 item below names the section it modifies.
 
-### A. Tier T is thread-wide header differential, not only participant drift
+### A. Tier T has a rule, not just a list — every Tier L header check has a T counterpart
 
 **Modifies §2, Tier T, and §5 step 3.**
 
-Tier T was scoped to the participant set — #16's incident, where a compromised real account replies
-and the *other* recipients are swapped to a lookalike domain. That remains the highest-value check in
-the tier. But the tier is the only place a *differential* is possible at all, and limiting it to
-recipients leaves the rest of the thread's headers unexamined when the comparison is already in hand.
+**Correction to this amendment as first drafted (same day):** it asserted that *"Tier T was scoped to
+the participant set"*. That is false. §2's Tier T already lists six items, two of which are not
+participant checks at all — **thread resurrection** (a reply to a thread dormant for months) and
+**subject drift inside a single thread**. The draft also proposed "subject mutation beyond accumulated
+`Re:`/`Fwd:`", which *is* the existing subject-drift item under a different name.
 
-Tier T therefore also covers, across the messages of one thread:
+The cause is worth recording: the draft took Tier T's content from issue #16, which is about
+participant drift, rather than from the section it was amending. Reading the artifact being changed —
+not the artifact that motivated the change — would have caught all of it.
 
-- **`References` / `In-Reply-To` chain integrity** — a break, or a parent outside the thread
-- **`Message-ID` domain changing mid-thread** while the participants appear unchanged
-- **`Reply-To` appearing partway through** a thread that had none
-- **`Return-Path` diverging from `From` only in later messages**
-- **Subject mutation** beyond accumulated `Re:`/`Fwd:` prefixes
-- **The `Authentication-Results` verdict weakening across the thread** — pass, then neutral or none
+**What survives is better than the list that prompted it.** Three of the draft's additions
+(`Reply-To`, `Return-Path`, `Message-ID`) already appear in **Tier L**, and the relationship between
+the tiers is systematic rather than incidental:
 
-The last one is the reason this belongs in T rather than L. Every message can pass its own Tier L
-check while the *trend* is the signal, and no message-scoped check can see a trend. It is the same
-argument #16 makes about the cast being forged while each message is authentic, applied to
-authentication rather than to addresses.
+> **Tier L asks: is this message internally consistent?**
+> **Tier T asks: did that answer change across the thread?**
+
+So the rule, which generates checks rather than enumerating them: **every Tier L header check has a
+Tier T counterpart — the differential of itself.** `Reply-To` ≠ `From` is Tier L; a `Reply-To`
+*appearing* in message four of a thread that had none is Tier T. `Return-Path` ≠ `From` is L;
+diverging *only in later messages* is T. `Message-ID` domain ≠ `From` domain is L; the `Message-ID`
+domain *changing mid-thread* is T.
+
+Stating the rule means a signal added to L gets its T counterpart considered by construction, instead
+of the two lists drifting apart as both grow.
+
+**Two items are genuinely new in either tier:**
+
+- **`References` / `In-Reply-To` chain integrity** — a break in the chain, or a parent outside the
+  thread. Structural rather than a header comparison, so it has no Tier L counterpart.
+- **The `Authentication-Results` result weakening across the thread** — pass, then neutral or none.
+  This is the clearest case for the rule: every message can pass its own Tier L authentication check
+  while the *trend* is the signal, and no message-scoped check can see a trend. It is #16's argument
+  about the cast being forged while each message is authentic, applied to authentication rather than
+  to addresses.
 
 No new dependency: all of it is headers the thread already contains, so it stays testable on `.eml`
 fixtures with no network and no credentials.
@@ -394,7 +411,7 @@ exactly what §5 steps 1–3 build: headers only.
 
 ### C. The store is a history, not a cache
 
-**Modifies §2, Tiers D and X. New.**
+**Modifies §2 (Tiers D and X) and §3 — §3 is where the cache lives.**
 
 Measured 2026-10-01: `cloudsecurityalliance.org` publishes one MX, `smtp.google.com`, and per the
 domain owner it has changed **once in roughly fifteen years**.
@@ -436,9 +453,32 @@ legitimately. Tier X's registration age is near-immutable once known — a domai
 not change — so it caches approximately forever, which is also what minimises how often the product
 tells a registry who CSA emails.
 
-**Scope held deliberately narrow:** per-machine, surviving restarts. Whether a *shared* registry should
-exist is deliberately not decided here, because a central record of "which domains CSA corresponds
-with, and since when" is a map of CSA's correspondents and engages `DATA-BOUNDARIES.md` and
+**Where it lives, and the axis the 2026-09-01 design spec named.** That spec records: *"Writing
+`.eml` to disk is a new axis — a filesystem write, which no existing capability covers."* A persistent
+observation store is the same axis, and the first draft of this amendment did not engage it.
+
+Two directories, because two different things are being conflated by the word "cache":
+
+| | Directory | Why |
+|---|---|---|
+| **Observation history** | `~/.csa_google_gmail_calendar/`, beside the token | machine state whose **whole value is that it persists**. Calling it temporary would be exactly wrong — forgetting is the failure mode this section exists to prevent. |
+| **`.eml` working files** | `~/.csa_google_gmail_calendar_tmp_files/` | files the **tool** needs and the person does not. Hidden, clearly labelled, and safe to delete in its entirety. |
+
+Not `CSA_GGC_DOWNLOAD_DIR`. That directory is where a person puts things they asked for; an `.eml`
+written so a signal can parse it is not something they asked for, and burying a wanted download among
+hundreds of them is a cost paid by the person for the tool's convenience.
+
+**Retention is a design question, not an implementation detail, and it is open.** The design spec also
+records that *"an `.eml` on disk is the complete message, which is a larger exposure than any API
+response this project otherwise handles."* A directory that accumulates complete messages indefinitely
+is that exposure, multiplied, and merely hiding it does not reduce it. What must be settled: whether an
+`.eml` is deleted after the signals that needed it have run, kept for a bounded window, or kept until
+something sweeps it — and whether the server states the directory's contents anywhere a person would
+look.
+
+**Scope held deliberately narrow:** per-machine. Whether a *shared* registry should exist is
+deliberately not decided here, because a central record of "which domains CSA corresponds with, and
+since when" is a map of CSA's correspondents and engages `DATA-BOUNDARIES.md` and
 `SOURCE-OF-TRUTH.md`. Filed as CINO-Platform-Engineering#170.
 
 
@@ -459,7 +499,7 @@ architecture is for.
 |---|---|---|
 | headers | — (already in hand) | L, T |
 | correspondence | have we spoken with this address or domain, when last, how often | M |
-| content | what does this body or attachment contain | L, and `get_attachment` |
+| content | what does this body or attachment contain | L |
 | domain | MX, SPF, DMARC, DKIM selector | D |
 | registry | registration age, registrar, CT first-seen | X |
 
