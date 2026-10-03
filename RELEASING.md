@@ -70,9 +70,28 @@ Required status checks: `lint`, `test (3.10)`, `test (3.11)`, `test (3.12)`, `te
 
 3. **Promote `[Unreleased]` in `CHANGELOG.md`** to the version and date.
 
-4. **Check locally before tagging:**
+4. **Check locally before tagging.**
+
+   Two things this list assumes, both of which used to be silent (#32):
+
+   **It is written for a POSIX shell.** On Windows the interpreter is
+   `.venv/Scripts/python.exe`, not `.venv/bin/python`; everything else is identical.
+
+   **Coverage is NOT gated here, and the old local number was weaker than CI's.** It was
+   `--cov-fail-under=90` against CI's 100 — a checklist that is a *subset* of CI's, which is
+   the precise failure the note below already warned about for the security gate. Raising it
+   to 100 would be the wrong repair: `auth.py` keys on `_WINDOWS`, so **100% is reachable by
+   the union of platforms and by neither one alone.** A Windows run measures 99.62% with
+   nothing wrong, and a red line that is always expected stops being read.
+
+   So `--cov-fail-under=0` overrides the threshold on purpose — *not* `--no-cov`, which
+   disables coverage altogether and makes `--cov-report=term-missing` print a warning instead
+   of a report. The local run is for **failures**; coverage is a property of the whole matrix,
+   gated in CI on ubuntu where the suite runs completely. Seeing *which* lines your platform
+   leaves unexecuted is still useful, which is why the report stays.
+
    ```bash
-   .venv/bin/python -m pytest --cov --cov-report=term-missing --cov-fail-under=90
+   .venv/bin/python -m pytest --cov --cov-report=term-missing --cov-fail-under=0
    .venv/bin/python -m ruff check .
    .venv/bin/python -m mypy
    # The security gate, which CI runs and a checklist that omits it is a checklist that
@@ -132,7 +151,12 @@ Required status checks: `lint`, `test (3.10)`, `test (3.11)`, `test (3.12)`, `te
 - **The sdist guard** in `release.yml` fails the build if a token, credential-shaped file, or the
   `analysis`/`research`/`docs` directories reach the built artifact - see that step's own
   comments for why `.py` files are excluded from the word match.
-- **Coverage stays a real gate.** `--cov-fail-under=90` is not lowered to make a release pass;
-  a shortfall is a reason to add tests or to mark a specific line `# pragma: no cover` with a
-  comment naming what covers it instead (see `pyproject.toml`'s `[tool.coverage.report]` and
-  `_auth_flow.py`/`_login.py` for the two lines that currently are).
+- **Coverage stays a real gate — in CI, at 100, on ubuntu.** It is not a gate in the local
+  command above, and that is deliberate rather than a relaxation (#32): the repo has platform
+  branches, so no single machine can reach 100 and a local threshold is either weaker than
+  CI's or permanently red. The rule it protects is unchanged: **a shortfall is never answered
+  by lowering the number.** It is answered by adding tests, or by marking a specific line
+  `# pragma: no cover` with a comment naming what covers it instead — see `pyproject.toml`'s
+  `[tool.coverage.report]` and `_auth_flow.py`/`_login.py` for the two lines that currently
+  are. A platform-branch line is exactly the case a pragma does *not* fit, because the other
+  platform does execute it.
