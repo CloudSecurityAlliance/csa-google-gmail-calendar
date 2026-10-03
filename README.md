@@ -1,12 +1,5 @@
 # csa-google-gmail-calendar
 
-```
-project_tracker_base: CINO Project Tracker:appf7fRQUvY9Iy7sL
-project_tracker_table: Projects:tblchmbxSAavvJKaY
-project_tracker_record: not yet created
-project_source: github:CloudSecurityAlliance-Internal/CINO-Projects/projects/CloudSecurityAlliance/csa-google-gmail-calendar
-```
-
 A Python library and local stdio MCP server over the Gmail and Google Calendar REST APIs, on two
 pillars:
 
