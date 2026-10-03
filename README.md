@@ -515,6 +515,23 @@ created by `create_label` - including the one `demonstration_plan` creates for i
 its history entries seeded explicitly (there is no automatic "every write appends a history
 record" wiring), which is enough to test the tool but not a full incremental-sync simulation.
 
+## Project documents
+
+| Document | What question it answers |
+|---|---|
+| [`GOALS.md`](GOALS.md) | What success looks like, and how we would know it failed |
+| [`BUSINESS-CASE.md`](BUSINESS-CASE.md) | Why CSA is investing in this |
+| [`TODO.md`](TODO.md) | **Index of all open work.** Start here for what is unfinished |
+| [`DECISIONS-ADR/`](DECISIONS-ADR/) | One file per decision, each with its rejected alternatives |
+| [`SECURITY-RESOURCES.md`](SECURITY-RESOURCES.md) | Exposure surface, access model, data classification, accepted risks |
+| [`BACKUP-RESOURCES.md`](BACKUP-RESOURCES.md) | The only server of the four that persists **content** as well as credentials — and the two need opposite retention |
+| [`OPERATIONAL-RESOURCES.md`](OPERATIONAL-RESOURCES.md) | Nothing is hosted, so the resources are dependencies — and each one fails quietly |
+| [`WAITING-FOR.md`](WAITING-FOR.md) | Blockers with someone else's name on them |
+| [`FRICTION.md`](FRICTION.md) | What cost time, so it costs it once |
+| [`RACI.md`](RACI.md) | Who is accountable, and what the concentration costs |
+| [`RELEASING.md`](RELEASING.md) | The pre-tag checklist, and which platform it assumes |
+| [`SECURITY.md`](SECURITY.md) | How to report a vulnerability — reachable without any CSA access |
+
 ## Development
 
 ```bash
