@@ -237,18 +237,21 @@ def test_auth_status_payload_reads_the_client_project_from_the_given_client_secr
     assert out["client_project"] == "my-fake-project-123"
 
 
-def test_auth_status_reports_ready_with_no_refresh_available_when_expired_with_none(tmp_path):
+def test_auth_status_detail_says_no_refresh_is_available_when_expired_with_none(tmp_path):
     token_path = tmp_path / "token.json"
     token_path.write_text(
         '{"token": "at", "refresh_token": null, "client_id": "c", "client_secret": "s", '
         '"token_uri": "https://oauth2.googleapis.com/token", '
         '"expiry": "1970-01-01T00:00:00Z", "scopes": []}')
     out = auth_tools._auth_status_payload(str(token_path), [])
-    assert out["status"] == "ready"
+    # `cached`, not `ready`: this calls the payload directly with no verifier, and the
+    # function may not claim `ready` for something it has not checked. The detail below
+    # is what this test is about, and reaching it at all proves the local checks passed.
+    assert out["status"] == "cached"
     assert "no refresh token is stored" in out["detail"]
 
 
-def test_auth_status_reports_ready_with_automatic_refresh_when_expired_with_a_refresh_token(
+def test_auth_status_detail_says_refresh_is_automatic_when_a_refresh_token_is_present(
         tmp_path):
     """The other half of the expired-token detail: with a refresh token present, the next call
     will refresh silently rather than fail - a different message from the no-refresh-token
@@ -259,11 +262,14 @@ def test_auth_status_reports_ready_with_automatic_refresh_when_expired_with_a_re
         '"token_uri": "https://oauth2.googleapis.com/token", '
         '"expiry": "1970-01-01T00:00:00Z", "scopes": []}')
     out = auth_tools._auth_status_payload(str(token_path), [])
-    assert out["status"] == "ready"
+    # `cached`, not `ready`: this calls the payload directly with no verifier, and the
+    # function may not claim `ready` for something it has not checked. The detail below
+    # is what this test is about, and reaching it at all proves the local checks passed.
+    assert out["status"] == "cached"
     assert "refreshed automatically" in out["detail"]
 
 
-def test_auth_status_reports_plain_ready_with_no_expiry_caveat_when_not_expired(tmp_path):
+def test_auth_status_detail_carries_no_expiry_caveat_when_not_expired(tmp_path):
     """The third case, distinct from both expired variants above: a credential with a real,
     future `expiry` is not expired at all, so NEITHER the no-refresh-token detail NOR the
     will-refresh-automatically detail applies - the function must fall through the whole
@@ -274,7 +280,10 @@ def test_auth_status_reports_plain_ready_with_no_expiry_caveat_when_not_expired(
         '"token_uri": "https://oauth2.googleapis.com/token", '
         '"expiry": "2999-01-01T00:00:00Z", "scopes": []}')
     out = auth_tools._auth_status_payload(str(token_path), [])
-    assert out["status"] == "ready"
+    # `cached`, not `ready`: this calls the payload directly with no verifier, and the
+    # function may not claim `ready` for something it has not checked. The detail below
+    # is what this test is about, and reaching it at all proves the local checks passed.
+    assert out["status"] == "cached"
     assert "expired" not in out["detail"]
 
 

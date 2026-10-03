@@ -22,6 +22,7 @@ question (see `auth_status`'s own docstring for why it is three states and not t
 from __future__ import annotations
 
 import os
+import threading
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -71,11 +72,70 @@ def _revoke_best_effort(creds: Credentials) -> bool:
         return False
 
 
+# Seconds to wait for Gmail before giving up and reporting `cached`. Short on purpose:
+# `auth_status` is the tool somebody calls WHEN THINGS ARE ALREADY FAILING, so it has to answer
+# even when the network is the broken thing.
+_VERIFY_TIMEOUT = 5.0
+
+
+def _verify_live(verify, timeout: float | None = None) -> tuple[str, str]:
+    """Ask Gmail whether the cached credential actually works.
+
+    Returns `(outcome, detail)` where outcome is `ok` (detail is the address, or "" when the
+    deployment's policy withholds it), `rejected` (Gmail refused it), or `unverified` (the
+    question could not be asked).
+
+    Bounded on a THREAD rather than `signal.alarm`, which is POSIX-only - most of this server's
+    users run Windows. A thread that outlives the bound is abandoned as a daemon: the call is a
+    read-only `users.getProfile`, so the cost is one wasted request and there is no portable way
+    to kill it.
+
+    UNCERTAINTY DEGRADES TO `unverified`, NEVER TO `rejected`. Only our own typed auth and access
+    errors mean "Gmail refused". A socket error, a 500 or an SSL failure must not be reported as
+    a dead credential - telling somebody to log in again when their network is down is the same
+    kind of wrong answer this verification exists to remove.
+    """
+    # Read at CALL time, not as a default argument: `timeout=_VERIFY_TIMEOUT` in the signature
+    # binds the value at import, so the module attribute stops being the knob it looks like.
+    timeout = _VERIFY_TIMEOUT if timeout is None else timeout
+    box: dict[str, object] = {}
+
+    def run() -> None:
+        try:
+            box["ok"] = verify()
+        except BaseException as e:  # noqa: BLE001 - classifying the failure IS the job here
+            box["err"] = e
+
+    worker = threading.Thread(target=run, daemon=True, name="auth_status-verify")
+    worker.start()
+    worker.join(timeout)
+    if worker.is_alive():
+        return "unverified", (f"Google did not answer within {timeout:g}s, so the credential "
+                              f"has not been checked upstream.")
+    if "err" in box:
+        e = box["err"]
+        if isinstance(e, (exc.AuthError, exc.AccessError)):
+            return "rejected", str(e)
+        return "unverified", f"{type(e).__name__}: {e}"
+    who = box.get("ok") or {}
+    return "ok", (who.get("email_address") if isinstance(who, dict) else None) or ""
+
+
 def _auth_status_payload(token_path: str, required: list[str],
-                         client_secrets_path: str | None = None) -> dict[str, Any]:
-    """No network call, ever - see `auth_status`'s own docstring for why that is the whole
-    point of this function existing separately from `auth.load_cached_credentials`, which
-    refreshes an expired access token over the network as part of returning usable credentials.
+                         client_secrets_path: str | None = None,
+                         verify=None) -> dict[str, Any]:
+    """One bounded call, at the end, and only once the local checks have passed.
+
+    It used to make no network call at all, and said so - but the last state it returned was
+    `ready`, which is a claim that calls will work, and a file read cannot support that. The
+    sibling repo paid for the difference: csa-google-workspace#510, a token whose OAuth project
+    had been deleted reporting `ready` while every call failed. This function's own docstring
+    already admitted the gap - "whether a refresh will actually succeed is not knowable without
+    trying it" - so it now tries.
+
+    The LOCAL states still answer with no network at all. Verification is reached only when the
+    file exists, parses, and carries every required scope, so a missing credential never waits
+    on a timeout to say so.
 
     `client_secrets_path` is accepted as a parameter, not read from the environment in here, so this
     function stays a pure function of its arguments and testable without monkeypatching process
@@ -113,11 +173,28 @@ def _auth_status_payload(token_path: str, required: list[str],
                   "call will fail; call `authenticate` again.")
     elif creds is not None and creds.expired:
         detail += " The access token has expired and will be refreshed automatically on next use."
+    # Everything above is a LOCAL verdict and every state above is honest about being one.
+    # This last one was not: `ready` promises that calls will work.
+    if verify is None:
+        return {"status": "cached", "token_path": token_path, "client_project": client_project,
+                "detail": detail + " NOT checked against Google - no verifier was available, "
+                                   "so this says the file is well formed and nothing more."}
+    outcome, why = _verify_live(verify)
+    if outcome == "rejected":
+        return {"status": "credential_rejected", "token_path": token_path,
+                "client_project": client_project,
+                "detail": f"Google refused the credential cached at {token_path}: {why} Logging "
+                          f"in again is the usual fix; if it fails the same way, the OAuth "
+                          f"client itself is the problem rather than the token."}
+    if outcome == "unverified":
+        return {"status": "cached", "token_path": token_path, "client_project": client_project,
+                "detail": f"{detail} It could not be checked against Google: {why} The file is "
+                          f"well formed; whether Google still accepts it is unknown."}
     return {"status": "ready", "token_path": token_path, "client_project": client_project,
-            "detail": detail}
+            "detail": f"Verified against Google{f' as {why}' if why else ''}. {detail}"}
 
 
-def register_auth_tools(app: MCPServer, settings: Settings) -> None:
+def register_auth_tools(app: MCPServer, settings: Settings, verify=None) -> None:
     required = settings.required_scopes
 
     @tool(app, annotations=WRITE)
@@ -191,10 +268,14 @@ def register_auth_tools(app: MCPServer, settings: Settings) -> None:
     @tool(app, annotations=LOCAL_READ)
     def auth_status() -> dict[str, Any]:
         """Report whether a credential is cached, whether it covers every scope this
-        deployment's enabled capabilities need, and - if so - whether it looks usable right
-        now. Makes no network call and never returns the credential itself.
+        deployment's enabled capabilities need, and - if so - whether Google still accepts
+        it. Makes ONE bounded call for that last part and never returns the credential itself.
 
-        Three states, not two: `no_credential` (nothing usable cached - call `authenticate`),
+        `ready` means verified, not assumed: a credential can be cached, complete and dead, and
+        a file read cannot tell. `cached` is the honest answer when Google could not be asked -
+        a timeout, a socket error - and `credential_rejected` is when it was asked and refused.
+
+        Five states, not two: `no_credential` (nothing usable cached - call `authenticate`),
         `scope_short` (a credential IS cached and IS valid, it just predates a capability this
         deployment has since enabled - also call `authenticate`, but the fix is a re-consent,
         not a first login), and `ready`. Collapsing the first two would tell whoever reads this
@@ -208,7 +289,8 @@ def register_auth_tools(app: MCPServer, settings: Settings) -> None:
         reason it is here is to be the answer a consent flow never gave: which project a call
         is about to run (or already ran) against.
         """
-        return _auth_status_payload(settings.token_path, required, settings.client_secrets_path)
+        return _auth_status_payload(settings.token_path, required,
+                                    settings.client_secrets_path, verify=verify)
 
     @tool(app, annotations=_LOGOUT)
     def logout() -> dict[str, Any]:
