@@ -10,7 +10,7 @@ like, because every one of them fails quietly rather than loudly.
 
 | Resource | What depends on it | What its change looks like |
 |---|---|---|
-| **Gmail + Calendar REST APIs** | Every tool. Egress only | A field or scope moves and tools fail at the seam. Nothing here watches upstream — CINO-Platform-Engineering#49 is the fleet-level version of that gap |
+| **Gmail + Calendar REST APIs** | Every tool. Egress only | A field or scope moves and tools fail at the seam. Nothing here watches upstream — CINO-Engineering#49 is the fleet-level version of that gap |
 | **Google Cloud project `csa-gmail-calendar-mcp`** | The OAuth client every install uses | Delete or unpublish it and **every cached token stops refreshing** — and the failure arrives as "could not refresh cached credentials", naming nothing. The sibling lived this: csa-google-workspace#495, #510 |
 | **The consent screen's name** | What a member sees when authorising | It is a user-visible claim about who is asking. Changing it changes what they are agreeing to |
 | **PyPI + Trusted Publishing (OIDC)** | Installation. No long-lived token; attestations required | The supply-chain surface |
@@ -26,7 +26,7 @@ Reactive by design; there is no schedule. Three standing triggers:
    member is locked out until the new client is distributed — and `authenticate` cannot fix it,
    only replacing the client can.
 3. **A fleet decision this repo cites is superseded.** `DECISIONS-ADR/` entries reference
-   CINO-Platform-Engineering decisions by number, and a superseded one leaves a citation
+   CINO-Engineering decisions by number, and a superseded one leaves a citation
    asserting a standard that no longer holds. Nothing checks this.
 
 ## Coverage is gated in CI and not locally, which is deliberate
@@ -37,7 +37,7 @@ platforms and by neither alone, and a local threshold is therefore either weaker
 permanently red (#32).
 
 **The Windows job measures no coverage at all**, which means the `icacls` paths are pragma'd on
-ubuntu and unmeasured on Windows. That is CINO-Platform-Engineering#172, where the measurement
+ubuntu and unmeasured on Windows. That is CINO-Engineering#172, where the measurement
 and the three options live.
 
 ## Not here

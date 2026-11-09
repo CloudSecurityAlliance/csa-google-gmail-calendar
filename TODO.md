@@ -32,7 +32,7 @@ Created 2026-09-16.
 ## Drift
 
 - [ ] **Schedule `scripts/coverage.py` and diff its output** —
-  [CINO-PE #49](https://github.com/CloudSecurityAlliance-Internal/CINO-Platform-Engineering/issues/49).
+  [CINO-PE #49](https://github.com/CloudSecurityAlliance-Internal/CINO-Engineering/issues/49).
   It already regenerates the matrix from the Discovery snapshots; it needs a cadence and a diff.
 - [ ] **Watch the official servers' tool lists too**, not just the APIs. The 22% coverage figure is a
   moving target. Last checked 2026-09-16: both tool lists unchanged, schemas moved — see the drift
@@ -66,7 +66,7 @@ Created 2026-09-16.
 
 ## Repo standards
 
-- [x] **Apply [`PUBLIC-GITHUB-REPO-STANDARDS.md`](https://github.com/CloudSecurityAlliance-Internal/CINO-Platform-Engineering/blob/main/PUBLIC-GITHUB-REPO-STANDARDS.md)** ✅ **2026-09-26** —
+- [x] **Apply [`PUBLIC-GITHUB-REPO-STANDARDS.md`](https://github.com/CloudSecurityAlliance-Internal/CINO-Engineering/blob/main/PUBLIC-GITHUB-REPO-STANDARDS.md)** ✅ **2026-09-26** —
   `.github/workflows/ci.yml` (lint/type/test matrix 3.10-3.14/security, SHA-pinned actions) and
   `release.yml` (Trusted Publishing + PEP 740 attestations, credential-free `build` job,
   minimal `publish` job) both added; `RELEASING.md`/`CHANGELOG.md` written. **Still open:**
