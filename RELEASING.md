@@ -4,7 +4,7 @@ Publishing is **CI-only, off a published GitHub Release, via PyPI Trusted Publis
 No long-lived API token exists to leak. Nothing is ever published from a laptop.
 
 The chain each release preserves, per
-[`PUBLIC-GITHUB-REPO-STANDARDS.md`](https://github.com/CloudSecurityAlliance-Internal/CINO-Platform-Engineering/blob/main/PUBLIC-GITHUB-REPO-STANDARDS.md) §6:
+[`PUBLIC-GITHUB-REPO-STANDARDS.md`](https://github.com/CloudSecurityAlliance-Internal/CINO-Engineering/blob/main/PUBLIC-GITHUB-REPO-STANDARDS.md) §6:
 
 ```
 PR → protected main → GitHub Release → CI build → approved, attested OIDC publish

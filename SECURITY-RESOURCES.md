@@ -55,7 +55,7 @@ rules follow, and the second inverts an instinct:
 
 | Gap | Status | Owner |
 |---|---|---|
-| **Nothing watches the upstream surface.** Coverage captured 2026-09-01; `scripts/coverage.py` computes the matrix but is not scheduled | Open — [CINO-PE #49](https://github.com/CloudSecurityAlliance-Internal/CINO-Platform-Engineering/issues/49) | Kurt Seifried |
+| **Nothing watches the upstream surface.** Coverage captured 2026-09-01; `scripts/coverage.py` computes the matrix but is not scheduled | Open — [CINO-PE #49](https://github.com/CloudSecurityAlliance-Internal/CINO-Engineering/issues/49) | Kurt Seifried |
 | **The allowlist design rests on an unprobed assumption** — that a filter forward requires a pre-verified destination | Open — tracked in `TODO.md` | Kurt Seifried |
 | **Delegation is undetectable from the user's own credential.** `delegates.list` needs DWD, so this server cannot report who else reads a mailbox | Accepted — belongs to a future `csa-google-gmail-audit` | Kurt Seifried |
 | **`PUBLIC-GITHUB-REPO-STANDARDS.md` unapplied** — no branch protection, no required CI gates, no CI | Open — tracked in `TODO.md` | Kurt Seifried |

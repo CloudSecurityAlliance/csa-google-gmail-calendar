@@ -53,8 +53,8 @@ Three consequences worth stating, because none of them is the code's to solve:
 2. **It is a user-chosen path, so it can be anywhere** — including inside OneDrive, Dropbox or
    iCloud, which would copy mailbox content into a vendor's storage and onto every device. The
    code cannot detect that and should not refuse it.
-3. **It is adjacent to the rule in CINO-Platform-Engineering
-   [`DATA-BOUNDARIES.md`](https://github.com/CloudSecurityAlliance-Internal/CINO-Platform-Engineering/blob/main/DATA-BOUNDARIES.md)** —
+3. **It is adjacent to the rule in CINO-Engineering
+   [`DATA-BOUNDARIES.md`](https://github.com/CloudSecurityAlliance-Internal/CINO-Engineering/blob/main/DATA-BOUNDARIES.md)** —
    *"no customer or member data, ever. Not a corpus, not a sample, not an illustrative excerpt"*
    — which is about repositories, not laptops. A download directory is the mechanism by which
    that data most plausibly reaches a place it could then be committed from. Worth knowing when
@@ -91,4 +91,4 @@ sibling, where `auth_status` reported `ready` while every call failed.
 - Dependencies and what their change looks like:
   [`OPERATIONAL-RESOURCES.md`](OPERATIONAL-RESOURCES.md).
 - Why `ls -l` and `os.chmod` cannot be trusted on Windows:
-  [`POSIX-AND-WINDOWS.md`](https://github.com/CloudSecurityAlliance-Internal/CINO-Platform-Engineering/blob/main/POSIX-AND-WINDOWS.md).
+  [`POSIX-AND-WINDOWS.md`](https://github.com/CloudSecurityAlliance-Internal/CINO-Engineering/blob/main/POSIX-AND-WINDOWS.md).
