@@ -14,7 +14,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "csa-google-gmail-calendar"
 dynamic = ["version"]
-description = "Read, compose and send Gmail, and manage Google Calendar events"
+description = "Read, compose and send Gmail, and manage Google Calendar events. Not affiliated with or endorsed by Google."
 readme = "README.md"
 requires-python = ">=3.14"
 license = "Apache-2.0"

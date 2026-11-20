@@ -3,6 +3,13 @@
 All notable changes to this project are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+### Changed
+- **The README and the package summary say this project is not affiliated with or endorsed
+  by Google.** The name carries Google's, so the README now states that near the top, with a
+  trademark notice, and the PyPI summary ends with it. Documentation and package metadata
+  only: no code, tool or behaviour changed.
+
 ## [0.5.1] - 2026-09-29
 ### Fixed
 - **Two path guards were dead on Windows, each for a different reason, and both are
