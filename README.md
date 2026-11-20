@@ -13,8 +13,8 @@ The second pillar exists because the first is not enough. A phish impersonating 
 **passed** SPF, DKIM and DMARC, because those authenticate the sending *domain*, not the claimed
 *identity*. See §9 of the design spec.
 
-Not affiliated with or endorsed by Google. Google, Gmail and Google Calendar are trademarks of their
-owner.
+Not affiliated with or endorsed by Google. Google, Gmail and Google Calendar are trademarks of
+Google LLC.
 
 > **Status: implemented.** A `Backend`/`PolicyBackend`/MCP-tools stack, a local stdio server, an
 > offline test suite, and the config/demo/CI surface described below all exist in `src/` and
